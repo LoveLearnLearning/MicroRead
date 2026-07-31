@@ -83,6 +83,6 @@ cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml
 corepack pnpm build
 ```
 
-当前自动化覆盖：31 个 Web/协议/安全测试、3 个 Desktop 发布契约测试、11 个默认 Rust 测试、2 个显式 DeepSeek 原生冒烟测试、3 条 Web Chromium 端到端流程和 1 条 Desktop 静态壳端到端流程。
+当前自动化覆盖：34 个 Web/协议/安全测试、3 个 Desktop 发布契约测试、12 个默认 Rust 测试、2 个显式 DeepSeek 原生冒烟测试、3 条 Web Chromium 端到端流程和 1 条 Desktop 静态壳端到端流程。
 
 Windows 验收机基线：加入全文翻译后的 release EXE 13.34 MiB；首次启动到可响应窗口约 500 ms，随后两次约 105–108 ms。Web E2E 覆盖完整阅读/高亮恢复、PDF 渐进导入，以及全文翻译的双向同步、原文切换和缓存恢复。

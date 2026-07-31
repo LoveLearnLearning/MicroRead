@@ -21,6 +21,28 @@ const MAX_REDIRECTS: usize = 4;
 const AI_SETTINGS_FILE: &str = "ai-settings.json";
 const AI_CREDENTIAL_SERVICE: &str = "io.github.micro-read";
 const AI_CREDENTIAL_ACCOUNT: &str = "deepseek-api-key";
+const DESKTOP_SERVICE_WORKER_CLEANUP_SCRIPT: &str = r#"
+;(() => {
+  if (window.location.hostname !== "tauri.localhost" || !("serviceWorker" in navigator) || !("caches" in window)) return;
+  const cleanupKey = "micro-read:desktop-pwa-cleanup:v1";
+  Promise.all([
+    navigator.serviceWorker.getRegistrations().then((registrations) =>
+      Promise.all(registrations.map((registration) => registration.unregister()))
+        .then((results) => results.some(Boolean)),
+    ),
+    caches.keys().then((cacheNames) => {
+      const legacyCacheNames = cacheNames.filter((cacheName) => cacheName.startsWith("micro-read-"));
+      return Promise.all(legacyCacheNames.map((cacheName) => caches.delete(cacheName)))
+        .then((results) => legacyCacheNames.length > 0 || results.some(Boolean));
+    }),
+  ]).then(([unregistered, deleted]) => {
+    if ((unregistered || deleted) && !window.sessionStorage.getItem(cleanupKey)) {
+      window.sessionStorage.setItem(cleanupKey, "1");
+      window.location.reload();
+    }
+  }).catch(() => undefined);
+})();
+"#;
 // Kept only to migrate settings written by versions that stored an XOR-obfuscated key in JSON.
 const OBFUSCATION_KEY: &[u8] = b"micro-read-local-obfuscation-key-v1";
 
@@ -1059,6 +1081,7 @@ fn save_ai_settings(app: AppHandle, settings: AiSettingsUpdate) -> Result<(), St
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .append_invoke_initialization_script(DESKTOP_SERVICE_WORKER_CLEANUP_SCRIPT)
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
@@ -1076,6 +1099,16 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn desktop_bootstrap_removes_only_legacy_pwa_state() {
+        assert!(DESKTOP_SERVICE_WORKER_CLEANUP_SCRIPT.trim_start().starts_with(";(() =>"));
+        assert!(DESKTOP_SERVICE_WORKER_CLEANUP_SCRIPT.contains("serviceWorker.getRegistrations"));
+        assert!(DESKTOP_SERVICE_WORKER_CLEANUP_SCRIPT.contains("startsWith(\"micro-read-\")"));
+        assert!(DESKTOP_SERVICE_WORKER_CLEANUP_SCRIPT.contains("window.location.reload"));
+        assert!(!DESKTOP_SERVICE_WORKER_CLEANUP_SCRIPT.contains("indexedDB"));
+        assert!(!DESKTOP_SERVICE_WORKER_CLEANUP_SCRIPT.contains("clear_all_browsing_data"));
+    }
 
     #[test]
     fn blocks_private_and_reserved_addresses() {
