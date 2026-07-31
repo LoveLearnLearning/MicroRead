@@ -1,0 +1,72 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-desktop-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Enable corepack
+        run: corepack enable
+
+      - name: Install pnpm
+        run: corepack prepare pnpm@9.15.1 --activate
+
+      - name: Install dependencies
+        run: corepack pnpm install --frozen-lockfile
+
+      - name: Build Web + Desktop
+        env:
+          TAURI_PRIVATE_KEY: ${{ secrets.TAURI_PRIVATE_KEY }}
+          TAURI_KEY_PASSWORD: ${{ secrets.TAURI_KEY_PASSWORD }}
+        run: corepack pnpm build:desktop
+
+      - name: Collect artifacts
+        id: collect
+        shell: pwsh
+        run: |
+          $version = $env:GITHUB_REF_NAME -replace '^v',''
+          $bundle = "apps/desktop/src-tauri/target/release/bundle"
+          $out = @()
+          $nsis = Get-ChildItem "$bundle/nsis" -Filter "micro-read_*_x64-setup.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($nsis) {
+            $dst = "MicroRead-v$version-windows-x86_64-setup.exe"
+            Copy-Item $nsis.FullName $dst
+            $out += $dst
+          }
+          $msi = Get-ChildItem "$bundle/msi" -Filter "micro-read_*_x64_zh-CN.msi" -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($msi) {
+            $dst = "MicroRead-v$version-windows-x86_64.msi"
+            Copy-Item $msi.FullName $dst
+            $out += $dst
+          }
+          $exe = "apps/desktop/src-tauri/target/release/micro-read-desktop.exe"
+          if (Test-Path $exe) {
+            $dst = "MicroRead-v$version-windows-x86_64-portable.exe"
+            Copy-Item $exe $dst
+            $out += $dst
+          }
+          "files=$($out -join '|')" >> $env:GITHUB_OUTPUT
+
+      - name: Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: ${{ steps.collect.outputs.files }}
