@@ -43,7 +43,7 @@ jobs:
           $version = $env:GITHUB_REF_NAME -replace '^v',''
           $base = "apps/desktop/src-tauri/target/release"
           $out = @()
-          $nsis = Get-ChildItem "$base/bundle/nsis" -Filter "micro-read_*_x64-setup.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+          $nsis = Get-ChildItem "$base/bundle/nsis" -Filter "MicroRead_*_x64-setup.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
           if ($nsis) {
             $dst = "MicroRead-v$version-windows-x86_64-setup.exe"
             Copy-Item $nsis.FullName $dst
