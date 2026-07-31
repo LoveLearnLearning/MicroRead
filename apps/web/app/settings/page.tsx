@@ -13,6 +13,7 @@ import {
   KeyRound,
   LoaderCircle,
   RefreshCw,
+  Save,
   Server,
   ShieldCheck,
   Sparkles,
@@ -27,7 +28,8 @@ import { AppShell } from "@/components/app-shell";
 import { db, deleteAllLocalData, ensureSeedData } from "@/lib/db";
 import { exportFullBackup, restoreFullBackup } from "@/lib/export";
 import { formatFileSize } from "@/lib/format";
-import { platformHealth } from "@/lib/platform";
+import { platformHealth, platformLoadAiSettings, platformSaveAiSettings } from "@/lib/platform";
+import type { AiSettings } from "@/lib/platform";
 
 interface Health {
   ok: boolean;
@@ -38,6 +40,8 @@ interface Health {
 }
 
 const defaultFlags: FeatureFlags = { aiEnabled: true, webImportEnabled: true, pdfImportEnabled: true };
+
+const emptyAiSettings: AiSettings = { apiKey: "", baseUrl: "", model: "", requestsPerHour: 30 };
 
 export default function SettingsPage() {
   const router = useRouter();
@@ -54,6 +58,10 @@ export default function SettingsPage() {
   const [backupBusy, setBackupBusy] = useState(false);
   const [backupMessage, setBackupMessage] = useState("");
   const [backupError, setBackupError] = useState("");
+  const [desktopAiSettings, setDesktopAiSettings] = useState<AiSettings | null>(null);
+  const [aiDraft, setAiDraft] = useState<AiSettings>(emptyAiSettings);
+  const [aiSaveStatus, setAiSaveStatus] = useState<"idle" | "saving" | "saved">("idle");
+  const [desktopAiSupported, setDesktopAiSupported] = useState<null | boolean>(null);
   const restoreInput = useRef<HTMLInputElement>(null);
 
   async function loadHealth() {
@@ -69,6 +77,43 @@ export default function SettingsPage() {
       setHealth(await response.json() as Health);
     } catch {
       setHealthError("无法读取服务状态，AI 功能可能暂不可用。 ");
+    }
+  }
+
+  useEffect(() => {
+    void (async () => {
+      const loaded = await platformLoadAiSettings();
+      if (loaded === null) {
+        setDesktopAiSupported(false);
+        return;
+      }
+      setDesktopAiSupported(true);
+      setDesktopAiSettings(loaded);
+      setAiDraft({
+        apiKey: loaded.apiKey,
+        baseUrl: loaded.baseUrl,
+        model: loaded.model,
+        requestsPerHour: Number.isFinite(loaded.requestsPerHour) && loaded.requestsPerHour > 0 ? loaded.requestsPerHour : 30,
+      });
+    })();
+  }, []);
+
+  async function saveAiDraft() {
+    setAiSaveStatus("saving");
+    try {
+      await platformSaveAiSettings({
+        apiKey: aiDraft.apiKey.trim(),
+        baseUrl: aiDraft.baseUrl.trim(),
+        model: aiDraft.model.trim(),
+        requestsPerHour: Math.max(1, Math.round(aiDraft.requestsPerHour) || 30),
+      });
+      setDesktopAiSettings({ ...aiDraft });
+      setAiSaveStatus("saved");
+      await loadHealth();
+      window.setTimeout(() => setAiSaveStatus("idle"), 1600);
+    } catch (reason) {
+      alert(reason instanceof Error ? reason.message : "保存失败，请重试。");
+      setAiSaveStatus("idle");
     }
   }
 
@@ -137,13 +182,32 @@ export default function SettingsPage() {
           <header className="page-header"><div className="page-heading"><span className="eyebrow">SETTINGS & OPERATIONS</span><h1>设置与用量</h1><p>管理本地数据、AI 服务和开源 Reader 的运行状态。</p></div></header>
 
           <section className="settings-section">
-            <div className="settings-section-title"><span><Sparkles size={18} /></span><div><h2>AI 服务</h2><p>凭据只存在于服务端环境变量，浏览器不会读取或保存密钥。</p></div><button className="icon-button" onClick={() => void loadHealth()} aria-label="刷新状态"><RefreshCw size={16} /></button></div>
+            <div className="settings-section-title"><span><Sparkles size={18} /></span><div><h2>AI 服务</h2><p>{desktopAiSupported === false ? "Web 端凭据从服务端环境变量读取。" : "桌面端凭据加密保存在本机，浏览器不会读取或保存密钥。"}</p></div><button className="icon-button" onClick={() => void loadHealth()} aria-label="刷新状态"><RefreshCw size={16} /></button></div>
             <div className="settings-card provider-card">
               <div className="provider-mark">DS</div>
               <div><strong>{health?.ai.provider || "DeepSeek"}</strong><small>{health?.ai.model || "正在读取模型…"}</small></div>
               <span className={`status-pill ${health?.ai.configured ? "success" : "warning"}`}>{health === null ? <LoaderCircle className="spin" size={12} /> : health.ai.configured ? <Check size={12} /> : <AlertTriangle size={12} />}{health === null ? "检查中" : health.ai.configured ? "已配置" : "缺少凭据"}</span>
             </div>
             {healthError && <p className="settings-warning">{healthError}</p>}
+            {desktopAiSupported && (
+              <div className="ai-config-form">
+                <label className="ai-field"><span><KeyRound size={14} /> API Key</span><input type="password" autoComplete="off" placeholder="sk-..." value={aiDraft.apiKey} onChange={(event) => setAiDraft((current) => ({ ...current, apiKey: event.target.value }))} /></label>
+                <label className="ai-field"><span>Base URL</span><input type="text" placeholder="https://api.deepseek.com" value={aiDraft.baseUrl} onChange={(event) => setAiDraft((current) => ({ ...current, baseUrl: event.target.value }))} /></label>
+                <label className="ai-field"><span>Model</span><input type="text" placeholder="deepseek-v4-flash" value={aiDraft.model} onChange={(event) => setAiDraft((current) => ({ ...current, model: event.target.value }))} /></label>
+                <label className="ai-field"><span>每小时请求数</span><input type="number" min={1} max={1000} value={aiDraft.requestsPerHour} onChange={(event) => setAiDraft((current) => ({ ...current, requestsPerHour: Number(event.target.value) || 30 }))} /></label>
+                <div className="ai-config-actions">
+                  <button className="secondary-button" disabled={aiSaveStatus === "saving"} onClick={() => void saveAiDraft()}>
+                    {aiSaveStatus === "saving" ? "保存中…" : <><Save size={14} /> 保存配置</>}
+                  </button>
+                  {aiSaveStatus === "saved" && <span className="settings-success"><Check size={14} /> 已保存,刷新状态中</span>}
+                  {desktopAiSettings?.apiKey && !aiDraft.apiKey && <span className="settings-warning"><AlertTriangle size={14} /> 保存后将清空已存的密钥</span>}
+                </div>
+                <p className="settings-footnote">密钥以混淆形式保存在桌面应用数据目录,不会进入浏览器存储或备份文件。</p>
+              </div>
+            )}
+            {desktopAiSupported === false && (
+              <p className="settings-footnote">在 Web 模式下,请通过 <code>.env.local</code> 配置 <code>OPENAI_API_KEY</code>;桌面版支持在此直接填写。</p>
+            )}
             <div className="usage-grid">
               <div><span><Gauge size={16} /></span><small>输入 Token</small><strong>{totals.input.toLocaleString()}</strong></div>
               <div><span><Activity size={16} /></span><small>输出 Token</small><strong>{totals.output.toLocaleString()}</strong></div>

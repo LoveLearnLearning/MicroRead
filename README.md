@@ -6,7 +6,6 @@
 ![Next.js](https://img.shields.io/badge/Next.js-16-black)
 ![Tauri](https://img.shields.io/badge/Tauri-2-24c8db)
 ![tests](https://img.shields.io/badge/tests-26_unit_%2B_Web_Desktop_E2E-5f84a8)
-![license](https://img.shields.io/badge/license-Apache--2.0-blue)
 
 ## 已完成的体验
 

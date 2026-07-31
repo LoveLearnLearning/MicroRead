@@ -23,6 +23,13 @@ export interface TranslationBatchResult {
   usage: Usage;
 }
 
+export interface AiSettings {
+  apiKey: string;
+  baseUrl: string;
+  model: string;
+  requestsPerHour: number;
+}
+
 export async function platformRequestAi(
   request: { sourceId: string; mode: AiMode; query: string; passages: Passage[]; locale: string },
 ): Promise<PlatformAiResult | null> {
@@ -46,4 +53,12 @@ export async function platformTranslateBatch(request: {
 }): Promise<TranslationBatchResult | null> {
   void request;
   return null;
+}
+
+export async function platformLoadAiSettings(): Promise<AiSettings | null> {
+  return null;
+}
+
+export async function platformSaveAiSettings(settings: AiSettings): Promise<void> {
+  void settings;
 }

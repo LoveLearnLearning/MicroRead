@@ -622,6 +622,13 @@ kbd { padding: 2px 6px; color: var(--ink-faint); border: 1px solid var(--line); 
 .usage-grid > div > span { grid-row: 1 / span 2; width: 27px; height: 27px; display: grid; place-items: center; border-radius: 7px; color: var(--accent); background: var(--surface-raised); }
 .usage-grid small { color: var(--ink-faint); font-size: 8px; }.usage-grid strong { font-size: 12px; }
 .settings-footnote { margin: 9px 2px 0; color: var(--ink-faint); font-size: 8px; }
+.ai-config-form { display: grid; gap: 11px; margin: 14px 2px 4px; padding: 16px; border: 1px dashed var(--line); border-radius: 11px; background: var(--surface-muted); }
+.ai-field { display: grid; gap: 5px; }
+.ai-field > span { display: flex; align-items: center; gap: 6px; color: var(--ink-soft); font-size: 9px; }
+.ai-field input { height: 32px; padding: 0 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-raised); color: var(--ink); font-size: 11px; }
+.ai-field input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
+.ai-config-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 2px; }
+.ai-config-actions .secondary-button { display: inline-flex; align-items: center; gap: 6px; }
 .local-data-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1px; overflow: hidden; border: 1px solid var(--line); border-radius: 10px; background: var(--line); }
 .local-data-stats > div { display: grid; gap: 4px; padding: 13px; background: var(--surface-raised); text-align: center; }
 .local-data-stats strong { font-size: 15px; }.local-data-stats small { color: var(--ink-faint); font-size: 8px; }

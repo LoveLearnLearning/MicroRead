@@ -1,7 +1,9 @@
 use std::{
     collections::{HashMap, HashSet},
     env,
+    fs,
     net::IpAddr,
+    path::PathBuf,
     time::Duration,
 };
 
@@ -10,12 +12,198 @@ use reqwest::{header, redirect::Policy, Client, StatusCode};
 use scraper::{Html, Selector};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use tauri::{AppHandle, Manager};
 use tokio::net::lookup_host;
 use url::Url;
 use uuid::Uuid;
 
 const MAX_HTML_BYTES: usize = 5 * 1024 * 1024;
 const MAX_REDIRECTS: usize = 4;
+const AI_SETTINGS_FILE: &str = "ai-settings.json";
+const OBFUSCATION_KEY: &[u8] = b"micro-read-local-obfuscation-key-v1";
+
+fn xor_encode(input: &[u8]) -> Vec<u8> {
+    input
+        .iter()
+        .enumerate()
+        .map(|(index, byte)| byte ^ OBFUSCATION_KEY[index % OBFUSCATION_KEY.len()])
+        .collect()
+}
+
+fn base64_encode(input: &[u8]) -> String {
+    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut output = String::with_capacity((input.len() + 2) / 3 * 4);
+    for chunk in input.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = chunk.get(1).copied().unwrap_or(0) as u32;
+        let b2 = chunk.get(2).copied().unwrap_or(0) as u32;
+        let triple = (b0 << 16) | (b1 << 8) | b2;
+        output.push(ALPHABET[((triple >> 18) & 0x3F) as usize] as char);
+        output.push(ALPHABET[((triple >> 12) & 0x3F) as usize] as char);
+        if chunk.len() > 1 {
+            output.push(ALPHABET[((triple >> 6) & 0x3F) as usize] as char);
+        } else {
+            output.push('=');
+        }
+        if chunk.len() > 2 {
+            output.push(ALPHABET[(triple & 0x3F) as usize] as char);
+        } else {
+            output.push('=');
+        }
+    }
+    output
+}
+
+fn base64_decode(input: &str) -> Result<Vec<u8>, String> {
+    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let cleaned: Vec<u8> = input.bytes().filter(|byte| !byte.is_ascii_whitespace()).collect();
+    if cleaned.len() % 4 != 0 {
+        return Err("base64 length invalid".to_string());
+    }
+    let mut output = Vec::with_capacity(cleaned.len() / 4 * 3);
+    for chunk in cleaned.chunks(4) {
+        let mut triple: u32 = 0;
+        let mut padding = 0;
+        for (index, byte) in chunk.iter().enumerate() {
+            if *byte == b'=' {
+                padding += 1;
+                continue;
+            }
+            let position = ALPHABET
+                .iter()
+                .position(|value| value == byte)
+                .ok_or_else(|| "invalid base64 character".to_string())?;
+            triple |= (position as u32) << (18 - index * 6);
+        }
+        output.push(((triple >> 16) & 0xFF) as u8);
+        if padding < 2 {
+            output.push(((triple >> 8) & 0xFF) as u8);
+        }
+        if padding < 1 {
+            output.push((triple & 0xFF) as u8);
+        }
+    }
+    Ok(output)
+}
+
+fn obfuscate(input: &str) -> String {
+    base64_encode(&xor_encode(input.as_bytes()))
+}
+
+fn deobfuscate(input: &str) -> Result<String, String> {
+    let decoded = base64_decode(input)?;
+    let raw = xor_encode(&decoded);
+    String::from_utf8(raw).map_err(|_| "deobfuscated bytes are not valid UTF-8".to_string())
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AiSettings {
+    #[serde(default)]
+    api_key: String,
+    #[serde(default)]
+    base_url: String,
+    #[serde(default)]
+    model: String,
+    #[serde(default = "default_requests_per_hour")]
+    requests_per_hour: u32,
+}
+
+fn default_requests_per_hour() -> u32 {
+    30
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StoredAiSettings {
+    api_key: String,
+    base_url: String,
+    model: String,
+    requests_per_hour: u32,
+}
+
+fn ai_settings_path(app: &AppHandle) -> Result<PathBuf, String> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|err| format!("无法读取应用数据目录：{err}"))?;
+    fs::create_dir_all(&dir).map_err(|err| format!("无法创建应用数据目录：{err}"))?;
+    Ok(dir.join(AI_SETTINGS_FILE))
+}
+
+fn load_stored_settings(app: &AppHandle) -> Option<AiSettings> {
+    let path = ai_settings_path(app).ok()?;
+    let content = fs::read_to_string(&path).ok()?;
+    let stored: StoredAiSettings = serde_json::from_str(&content).ok()?;
+    let api_key = deobfuscate(&stored.api_key).unwrap_or_default();
+    let base_url = deobfuscate(&stored.base_url).unwrap_or_default();
+    let model = deobfuscate(&stored.model).unwrap_or_default();
+    Some(AiSettings {
+        api_key,
+        base_url,
+        model,
+        requests_per_hour: stored.requests_per_hour,
+    })
+}
+
+fn save_stored_settings(app: &AppHandle, settings: &AiSettings) -> Result<(), String> {
+    let path = ai_settings_path(app)?;
+    let stored = StoredAiSettings {
+        api_key: obfuscate(&settings.api_key),
+        base_url: obfuscate(&settings.base_url),
+        model: obfuscate(&settings.model),
+        requests_per_hour: settings.requests_per_hour,
+    };
+    let content = serde_json::to_string_pretty(&stored)
+        .map_err(|err| format!("无法序列化 AI 配置：{err}"))?;
+    fs::write(&path, content).map_err(|err| format!("无法写入 AI 配置：{err}"))
+}
+
+struct ResolvedAiConfig {
+    api_key: String,
+    model: String,
+    base_url: String,
+    #[allow(dead_code)]
+    requests_per_hour: u32,
+}
+
+fn resolve_ai_config(app: Option<&AppHandle>) -> ResolvedAiConfig {
+    let stored = app.and_then(load_stored_settings);
+    let env_key = env::var("OPENAI_API_KEY").ok().filter(|value| !value.trim().is_empty());
+    let env_model = env::var("AI_MODEL").ok().filter(|value| !value.trim().is_empty());
+    let env_base = env::var("DEEPSEEK_BASE_URL").ok().filter(|value| !value.trim().is_empty());
+    let env_limit = env::var("AI_REQUESTS_PER_HOUR").ok().and_then(|value| value.parse::<u32>().ok());
+    let api_key = stored
+        .as_ref()
+        .map(|settings| settings.api_key.clone())
+        .filter(|value| !value.trim().is_empty())
+        .or(env_key)
+        .unwrap_or_default();
+    let model = stored
+        .as_ref()
+        .map(|settings| settings.model.clone())
+        .filter(|value| !value.trim().is_empty())
+        .or(env_model)
+        .unwrap_or_else(|| "deepseek-v4-flash".to_string());
+    let base_url = stored
+        .as_ref()
+        .map(|settings| settings.base_url.clone())
+        .filter(|value| !value.trim().is_empty())
+        .or(env_base)
+        .unwrap_or_else(|| "https://api.deepseek.com".to_string());
+    let requests_per_hour = stored
+        .as_ref()
+        .map(|settings| settings.requests_per_hour)
+        .filter(|value| *value > 0)
+        .or(env_limit)
+        .unwrap_or(30);
+    ResolvedAiConfig {
+        api_key,
+        model,
+        base_url,
+        requests_per_hour,
+    }
+}
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -159,15 +347,14 @@ struct ImportedWebArticle {
 }
 
 #[tauri::command]
-fn runtime_health() -> RuntimeHealth {
-    let model = env::var("AI_MODEL").unwrap_or_else(|_| "deepseek-v4-flash".to_string());
-    let configured = env::var("OPENAI_API_KEY").is_ok_and(|value| !value.trim().is_empty());
+fn runtime_health(app: AppHandle) -> RuntimeHealth {
+    let config = resolve_ai_config(Some(&app));
     RuntimeHealth {
         ok: true,
         ai: AiHealth {
             provider: "DeepSeek",
-            model,
-            configured,
+            model: config.model,
+            configured: !config.api_key.trim().is_empty(),
         },
         storage: "indexeddb",
         sync: "local-only",
@@ -176,15 +363,23 @@ fn runtime_health() -> RuntimeHealth {
 }
 
 #[tauri::command]
-async fn request_ai(request: AiRequest) -> Result<PlatformAiResult, String> {
+async fn request_ai(app: AppHandle, request: AiRequest) -> Result<PlatformAiResult, String> {
+    let config = resolve_ai_config(Some(&app));
+    request_ai_with_config(config, request).await
+}
+
+async fn request_ai_with_config(
+    config: ResolvedAiConfig,
+    request: AiRequest,
+) -> Result<PlatformAiResult, String> {
     validate_ai_request(&request)?;
-    let api_key = env::var("OPENAI_API_KEY")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .ok_or_else(|| "桌面进程尚未配置 OPENAI_API_KEY；基础阅读仍可使用。".to_string())?;
-    let model = env::var("AI_MODEL").unwrap_or_else(|_| "deepseek-v4-flash".to_string());
-    let base_url =
-        env::var("DEEPSEEK_BASE_URL").unwrap_or_else(|_| "https://api.deepseek.com".to_string());
+    let api_key = if config.api_key.trim().is_empty() {
+        return Err("尚未配置 AI 凭据；基础阅读仍可使用。请在设置页填写 API Key。".to_string());
+    } else {
+        config.api_key
+    };
+    let model = config.model;
+    let base_url = config.base_url;
     let endpoint = format!("{}/chat/completions", base_url.trim_end_matches('/'));
 
     let source_data: Vec<Value> = request
@@ -337,15 +532,23 @@ async fn request_ai(request: AiRequest) -> Result<PlatformAiResult, String> {
 }
 
 #[tauri::command]
-async fn translate_chunks(request: TranslationRequest) -> Result<TranslationBatchResult, String> {
+async fn translate_chunks(app: AppHandle, request: TranslationRequest) -> Result<TranslationBatchResult, String> {
+    let config = resolve_ai_config(Some(&app));
+    translate_chunks_with_config(config, request).await
+}
+
+async fn translate_chunks_with_config(
+    config: ResolvedAiConfig,
+    request: TranslationRequest,
+) -> Result<TranslationBatchResult, String> {
     validate_translation_request(&request)?;
-    let api_key = env::var("OPENAI_API_KEY")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .ok_or_else(|| "桌面进程尚未配置 OPENAI_API_KEY；原文阅读仍可使用。".to_string())?;
-    let model = env::var("AI_MODEL").unwrap_or_else(|_| "deepseek-v4-flash".to_string());
-    let base_url =
-        env::var("DEEPSEEK_BASE_URL").unwrap_or_else(|_| "https://api.deepseek.com".to_string());
+    let api_key = if config.api_key.trim().is_empty() {
+        return Err("尚未配置 AI 凭据；原文阅读仍可使用。请在设置页填写 API Key。".to_string());
+    } else {
+        config.api_key
+    };
+    let model = config.model;
+    let base_url = config.base_url;
     let endpoint = format!("{}/chat/completions", base_url.trim_end_matches('/'));
     let source_chunks: Vec<Value> = request
         .chunks
@@ -693,6 +896,16 @@ fn normalize_text(value: String) -> String {
     value.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+#[tauri::command]
+fn load_ai_settings(app: AppHandle) -> Option<AiSettings> {
+    load_stored_settings(&app)
+}
+
+#[tauri::command]
+fn save_ai_settings(app: AppHandle, settings: AiSettings) -> Result<(), String> {
+    save_stored_settings(&app, &settings)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -700,7 +913,9 @@ pub fn run() {
             runtime_health,
             request_ai,
             translate_chunks,
-            import_web
+            import_web,
+            load_ai_settings,
+            save_ai_settings
         ])
         .run(tauri::generate_context!())
         .expect("failed to run MicroRead desktop");
@@ -785,7 +1000,7 @@ mod tests {
         };
         let runtime = tokio::runtime::Runtime::new().expect("tokio runtime should start");
         let result = runtime
-            .block_on(translate_chunks(request))
+            .block_on(translate_chunks_with_config(resolve_ai_config(None), request))
             .expect("desktop translation command should reach DeepSeek");
         assert_eq!(result.translations[0].id, "translation-live-chunk");
         assert!(!result.translations[0].text.trim().is_empty());
@@ -812,7 +1027,7 @@ mod tests {
 
         let runtime = tokio::runtime::Runtime::new().expect("tokio runtime should start");
         let result = runtime
-            .block_on(request_ai(request))
+            .block_on(request_ai_with_config(resolve_ai_config(None), request))
             .expect("desktop AI command should reach DeepSeek");
         assert!(!result.answer_markdown.trim().is_empty());
         assert_eq!(result.usage.model, "deepseek-v4-flash");
@@ -820,5 +1035,22 @@ mod tests {
             .citations
             .iter()
             .all(|citation| citation.passage_id == "desktop-live-passage"));
+    }
+
+    #[test]
+    fn obfuscation_round_trip_preserves_ascii() {
+        let original = "sk-deadbeef-1234-ABCD";
+        assert_eq!(deobfuscate(&obfuscate(original)).unwrap(), original);
+    }
+
+    #[test]
+    fn obfuscation_round_trip_preserves_cjk() {
+        let original = "密钥内容中文也行";
+        assert_eq!(deobfuscate(&obfuscate(original)).unwrap(), original);
+    }
+
+    #[test]
+    fn base64_decode_rejects_bad_length() {
+        assert!(base64_decode("abc").is_err());
     }
 }

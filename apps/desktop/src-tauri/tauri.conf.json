@@ -27,7 +27,20 @@
     }
   },
   "bundle": {
-    "active": false,
-    "targets": "all"
+    "active": true,
+    "targets": ["msi", "nsis"],
+    "category": "Productivity",
+    "shortDescription": "本地优先、证据优先的 AI 原生阅读器",
+    "longDescription": "阅微 / MicroRead：开源、本地优先、证据优先的 AI 原生阅读器。",
+    "publisher": "zhao0335",
+    "windows": {
+      "wix": {
+        "language": "zh-CN"
+      },
+      "nsis": {
+        "languages": ["SimpChinese", "English"],
+        "installMode": "currentUser"
+      }
+    }
   }
 }

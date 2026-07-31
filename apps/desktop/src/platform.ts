@@ -1,9 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { AiMode, Passage } from "@reader/domain";
 import type { ImportedWebArticle } from "@/lib/db";
-import type { PlatformAiResult, PlatformHealth, TranslationBatchResult } from "../../web/lib/platform";
+import type { AiSettings, PlatformAiResult, PlatformHealth, TranslationBatchResult } from "../../web/lib/platform";
 
-export type { TranslationBatchResult } from "../../web/lib/platform";
+export type { TranslationBatchResult, AiSettings } from "../../web/lib/platform";
 
 function asError(reason: unknown): Error {
   if (reason instanceof Error) return reason;
@@ -44,6 +44,22 @@ export async function platformTranslateBatch(request: {
 }): Promise<TranslationBatchResult> {
   try {
     return await invoke<TranslationBatchResult>("translate_chunks", { request });
+  } catch (reason) {
+    throw asError(reason);
+  }
+}
+
+export async function platformLoadAiSettings(): Promise<AiSettings | null> {
+  try {
+    return await invoke<AiSettings | null>("load_ai_settings");
+  } catch {
+    return null;
+  }
+}
+
+export async function platformSaveAiSettings(settings: AiSettings): Promise<void> {
+  try {
+    await invoke("save_ai_settings", { settings });
   } catch (reason) {
     throw asError(reason);
   }
