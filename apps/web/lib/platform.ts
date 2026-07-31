@@ -25,9 +25,30 @@ export interface TranslationBatchResult {
 
 export interface AiSettings {
   apiKey: string;
+  hasApiKey: boolean;
   baseUrl: string;
   model: string;
   requestsPerHour: number;
+}
+
+export interface AiSettingsUpdate {
+  apiKey: string | null;
+  clearApiKey: boolean;
+  baseUrl: string;
+  model: string;
+  requestsPerHour: number;
+}
+
+export interface DesktopUpdateInfo {
+  currentVersion: string;
+  version: string;
+  date?: string;
+  body?: string;
+}
+
+export interface UpdateDownloadProgress {
+  downloaded: number;
+  total?: number;
 }
 
 export async function platformRequestAi(
@@ -59,6 +80,29 @@ export async function platformLoadAiSettings(): Promise<AiSettings | null> {
   return null;
 }
 
-export async function platformSaveAiSettings(settings: AiSettings): Promise<void> {
+export async function platformSaveAiSettings(settings: AiSettingsUpdate): Promise<void> {
   void settings;
+}
+
+export function platformSupportsAiSettings(): boolean {
+  return false;
+}
+
+export function platformSupportsUpdates(): boolean {
+  return false;
+}
+
+export async function platformGetAppVersion(): Promise<string | null> {
+  return null;
+}
+
+export async function platformCheckForUpdate(): Promise<DesktopUpdateInfo | null> {
+  return null;
+}
+
+export async function platformInstallUpdate(
+  onProgress?: (progress: UpdateDownloadProgress) => void,
+): Promise<void> {
+  void onProgress;
+  throw new Error("Web 版本由浏览器刷新更新，无需安装桌面更新包。");
 }

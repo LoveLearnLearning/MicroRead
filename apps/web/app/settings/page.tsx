@@ -28,8 +28,19 @@ import { AppShell } from "@/components/app-shell";
 import { db, deleteAllLocalData, ensureSeedData } from "@/lib/db";
 import { exportFullBackup, restoreFullBackup } from "@/lib/export";
 import { formatFileSize } from "@/lib/format";
-import { platformHealth, platformLoadAiSettings, platformSaveAiSettings } from "@/lib/platform";
-import type { AiSettings } from "@/lib/platform";
+import { prepareAiSettingsSave, savedAiSettingsState } from "@/lib/ai-settings";
+import {
+  platformCheckForUpdate,
+  platformGetAppVersion,
+  platformHealth,
+  platformInstallUpdate,
+  platformLoadAiSettings,
+  platformSaveAiSettings,
+  platformSupportsAiSettings,
+  platformSupportsUpdates,
+} from "@/lib/platform";
+import type { AiSettings, AiSettingsUpdate, DesktopUpdateInfo, UpdateDownloadProgress } from "@/lib/platform";
+import { loadUpdatePreferences, saveUpdatePreferences, type UpdatePreferences } from "@/lib/update-preferences";
 
 interface Health {
   ok: boolean;
@@ -41,7 +52,7 @@ interface Health {
 
 const defaultFlags: FeatureFlags = { aiEnabled: true, webImportEnabled: true, pdfImportEnabled: true };
 
-const emptyAiSettings: AiSettings = { apiKey: "", baseUrl: "", model: "", requestsPerHour: 30 };
+const emptyAiSettings: AiSettings = { apiKey: "", hasApiKey: false, baseUrl: "", model: "", requestsPerHour: 30 };
 
 export default function SettingsPage() {
   const router = useRouter();
@@ -61,7 +72,16 @@ export default function SettingsPage() {
   const [desktopAiSettings, setDesktopAiSettings] = useState<AiSettings | null>(null);
   const [aiDraft, setAiDraft] = useState<AiSettings>(emptyAiSettings);
   const [aiSaveStatus, setAiSaveStatus] = useState<"idle" | "saving" | "saved">("idle");
-  const [desktopAiSupported, setDesktopAiSupported] = useState<null | boolean>(null);
+  const desktopAiSupported = platformSupportsAiSettings();
+  const [aiSettingsError, setAiSettingsError] = useState("");
+  const updatesSupported = platformSupportsUpdates();
+  const [appVersion, setAppVersion] = useState("");
+  const [availableUpdate, setAvailableUpdate] = useState<DesktopUpdateInfo | null>(null);
+  const [updateStatus, setUpdateStatus] = useState<"idle" | "checking" | "installing">("idle");
+  const [updateMessage, setUpdateMessage] = useState("");
+  const [updateError, setUpdateError] = useState("");
+  const [updateProgress, setUpdateProgress] = useState<UpdateDownloadProgress | null>(null);
+  const [updatePreferences, setUpdatePreferences] = useState<UpdatePreferences>(loadUpdatePreferences);
   const restoreInput = useRef<HTMLInputElement>(null);
 
   async function loadHealth() {
@@ -81,38 +101,95 @@ export default function SettingsPage() {
   }
 
   useEffect(() => {
+    if (!desktopAiSupported) return;
     void (async () => {
-      const loaded = await platformLoadAiSettings();
-      if (loaded === null) {
-        setDesktopAiSupported(false);
-        return;
+      try {
+        const loaded = await platformLoadAiSettings();
+        if (loaded === null) throw new Error("桌面运行时未返回 AI 配置。");
+        setDesktopAiSettings(loaded);
+        setAiDraft({ ...loaded, apiKey: "" });
+      } catch (reason) {
+        setAiSettingsError(reason instanceof Error ? reason.message : "无法读取桌面 AI 配置。");
       }
-      setDesktopAiSupported(true);
-      setDesktopAiSettings(loaded);
-      setAiDraft({
-        apiKey: loaded.apiKey,
-        baseUrl: loaded.baseUrl,
-        model: loaded.model,
-        requestsPerHour: Number.isFinite(loaded.requestsPerHour) && loaded.requestsPerHour > 0 ? loaded.requestsPerHour : 30,
-      });
     })();
-  }, []);
+  }, [desktopAiSupported]);
+
+  useEffect(() => {
+    if (!updatesSupported) return;
+    void platformGetAppVersion().then((version) => setAppVersion(version || ""));
+  }, [updatesSupported]);
+
+  async function checkForUpdates() {
+    setUpdateStatus("checking");
+    setUpdateError("");
+    setUpdateMessage("");
+    try {
+      const available = await platformCheckForUpdate();
+      setAvailableUpdate(available);
+      setUpdateMessage(available ? `发现新版本 ${available.version}` : "当前已经是最新版本。");
+    } catch (reason) {
+      setUpdateError(reason instanceof Error ? reason.message : "无法读取更新信息，请检查网络后重试。");
+    } finally {
+      setUpdateStatus("idle");
+    }
+  }
+
+  async function installAvailableUpdate() {
+    if (!availableUpdate || !window.confirm(`将更新到 MicroRead ${availableUpdate.version}，安装完成后软件会自动重启。继续吗？`)) return;
+    setUpdateStatus("installing");
+    setUpdateError("");
+    setUpdateProgress(null);
+    try {
+      await platformInstallUpdate(setUpdateProgress);
+    } catch (reason) {
+      setUpdateError(reason instanceof Error ? reason.message : "更新安装失败，请稍后重试。");
+      setUpdateStatus("idle");
+    }
+  }
+
+  function changeUpdatePreference(next: UpdatePreferences) {
+    const normalized = next.autoInstall ? { ...next, autoCheck: true } : next;
+    setUpdatePreferences(normalized);
+    saveUpdatePreferences(normalized);
+  }
 
   async function saveAiDraft() {
     setAiSaveStatus("saving");
+    setAiSettingsError("");
     try {
-      await platformSaveAiSettings({
-        apiKey: aiDraft.apiKey.trim(),
-        baseUrl: aiDraft.baseUrl.trim(),
-        model: aiDraft.model.trim(),
-        requestsPerHour: Math.max(1, Math.round(aiDraft.requestsPerHour) || 30),
-      });
-      setDesktopAiSettings({ ...aiDraft });
+      const update = prepareAiSettingsSave(aiDraft);
+      await platformSaveAiSettings(update);
+      const saved = savedAiSettingsState(update, aiDraft.hasApiKey);
+      setAiDraft(saved);
+      setDesktopAiSettings(saved);
       setAiSaveStatus("saved");
       await loadHealth();
       window.setTimeout(() => setAiSaveStatus("idle"), 1600);
     } catch (reason) {
-      alert(reason instanceof Error ? reason.message : "保存失败，请重试。");
+      setAiSettingsError(reason instanceof Error ? reason.message : "保存失败，请重试。");
+      setAiSaveStatus("idle");
+    }
+  }
+
+  async function clearSavedApiKey() {
+    if (!window.confirm("确定从系统凭据库中删除已保存的 API Key 吗？")) return;
+    setAiSaveStatus("saving");
+    setAiSettingsError("");
+    try {
+      const update: AiSettingsUpdate = {
+        ...prepareAiSettingsSave(aiDraft),
+        apiKey: null,
+        clearApiKey: true,
+      };
+      await platformSaveAiSettings(update);
+      const saved = savedAiSettingsState(update, aiDraft.hasApiKey);
+      setAiDraft(saved);
+      setDesktopAiSettings(saved);
+      setAiSaveStatus("saved");
+      await loadHealth();
+      window.setTimeout(() => setAiSaveStatus("idle"), 1600);
+    } catch (reason) {
+      setAiSettingsError(reason instanceof Error ? reason.message : "无法清除 API Key。");
       setAiSaveStatus("idle");
     }
   }
@@ -182,16 +259,17 @@ export default function SettingsPage() {
           <header className="page-header"><div className="page-heading"><span className="eyebrow">SETTINGS & OPERATIONS</span><h1>设置与用量</h1><p>管理本地数据、AI 服务和开源 Reader 的运行状态。</p></div></header>
 
           <section className="settings-section">
-            <div className="settings-section-title"><span><Sparkles size={18} /></span><div><h2>AI 服务</h2><p>{desktopAiSupported === false ? "Web 端凭据从服务端环境变量读取。" : "桌面端凭据加密保存在本机，浏览器不会读取或保存密钥。"}</p></div><button className="icon-button" onClick={() => void loadHealth()} aria-label="刷新状态"><RefreshCw size={16} /></button></div>
+            <div className="settings-section-title"><span><Sparkles size={18} /></span><div><h2>AI 服务</h2><p>{desktopAiSupported === false ? "Web 端凭据从服务端环境变量读取。" : "桌面端凭据保存在操作系统凭据库中，页面不会读取已存密钥。"}</p></div><button className="icon-button" onClick={() => void loadHealth()} aria-label="刷新状态"><RefreshCw size={16} /></button></div>
             <div className="settings-card provider-card">
               <div className="provider-mark">DS</div>
               <div><strong>{health?.ai.provider || "DeepSeek"}</strong><small>{health?.ai.model || "正在读取模型…"}</small></div>
               <span className={`status-pill ${health?.ai.configured ? "success" : "warning"}`}>{health === null ? <LoaderCircle className="spin" size={12} /> : health.ai.configured ? <Check size={12} /> : <AlertTriangle size={12} />}{health === null ? "检查中" : health.ai.configured ? "已配置" : "缺少凭据"}</span>
             </div>
             {healthError && <p className="settings-warning">{healthError}</p>}
+            {aiSettingsError && <p className="settings-warning">{aiSettingsError}</p>}
             {desktopAiSupported && (
               <div className="ai-config-form">
-                <label className="ai-field"><span><KeyRound size={14} /> API Key</span><input type="password" autoComplete="off" placeholder="sk-..." value={aiDraft.apiKey} onChange={(event) => setAiDraft((current) => ({ ...current, apiKey: event.target.value }))} /></label>
+                <label className="ai-field"><span><KeyRound size={14} /> API Key</span><input type="password" autoComplete="new-password" placeholder={aiDraft.hasApiKey ? "已安全保存；输入新密钥以替换" : "sk-..."} value={aiDraft.apiKey} onChange={(event) => setAiDraft((current) => ({ ...current, apiKey: event.target.value }))} /></label>
                 <label className="ai-field"><span>Base URL</span><input type="text" placeholder="https://api.deepseek.com" value={aiDraft.baseUrl} onChange={(event) => setAiDraft((current) => ({ ...current, baseUrl: event.target.value }))} /></label>
                 <label className="ai-field"><span>Model</span><input type="text" placeholder="deepseek-v4-flash" value={aiDraft.model} onChange={(event) => setAiDraft((current) => ({ ...current, model: event.target.value }))} /></label>
                 <label className="ai-field"><span>每小时请求数</span><input type="number" min={1} max={1000} value={aiDraft.requestsPerHour} onChange={(event) => setAiDraft((current) => ({ ...current, requestsPerHour: Number(event.target.value) || 30 }))} /></label>
@@ -199,10 +277,11 @@ export default function SettingsPage() {
                   <button className="secondary-button" disabled={aiSaveStatus === "saving"} onClick={() => void saveAiDraft()}>
                     {aiSaveStatus === "saving" ? "保存中…" : <><Save size={14} /> 保存配置</>}
                   </button>
+                  {aiDraft.hasApiKey && <button className="secondary-button" disabled={aiSaveStatus === "saving"} onClick={() => void clearSavedApiKey()}><Trash2 size={14} /> 清除密钥</button>}
                   {aiSaveStatus === "saved" && <span className="settings-success"><Check size={14} /> 已保存,刷新状态中</span>}
-                  {desktopAiSettings?.apiKey && !aiDraft.apiKey && <span className="settings-warning"><AlertTriangle size={14} /> 保存后将清空已存的密钥</span>}
+                  {desktopAiSettings?.hasApiKey && !aiDraft.apiKey && <span className="settings-success"><ShieldCheck size={14} /> 已保存的密钥保持不变</span>}
                 </div>
-                <p className="settings-footnote">密钥以混淆形式保存在桌面应用数据目录,不会进入浏览器存储或备份文件。</p>
+                <p className="settings-footnote">密钥保存在操作系统凭据库中，不会写入应用配置、浏览器存储或备份文件，也不会回传到页面。</p>
               </div>
             )}
             {desktopAiSupported === false && (
@@ -215,6 +294,22 @@ export default function SettingsPage() {
             </div>
             <p className="settings-footnote">成本按项目基线中的 DeepSeek V4 Flash 公价估算，仅用于测试观察；实际账单以供应商为准。</p>
           </section>
+
+          {updatesSupported && (
+            <section className="settings-section">
+              <div className="settings-section-title"><span><RefreshCw size={18} /></span><div><h2>软件更新</h2><p>通过带签名的 GitHub Release 安全更新桌面版。</p></div><span className="status-pill success">{appVersion ? `v${appVersion}` : "DESKTOP"}</span></div>
+              <div className="settings-action-row"><span><Download size={17} /><span><strong>手动检查更新</strong><small>{availableUpdate ? `可安装 v${availableUpdate.version}` : "检查是否有新的稳定版本"}</small></span></span><button className="secondary-button" disabled={updateStatus !== "idle"} onClick={() => void checkForUpdates()}>{updateStatus === "checking" ? "检查中…" : "检查更新"}</button></div>
+              {availableUpdate && <div className="settings-action-row"><span><RefreshCw size={17} /><span><strong>安装 v{availableUpdate.version}</strong><small>{availableUpdate.body || "下载、验签、安装并重新启动软件"}</small></span></span><button className="primary-button" disabled={updateStatus !== "idle"} onClick={() => void installAvailableUpdate()}>{updateStatus === "installing" ? "安装中…" : "立即更新"}</button></div>}
+              {updateStatus === "installing" && <div className="storage-meter"><div><span>正在下载并验签</span><small>{updateProgress?.total ? `${Math.round(updateProgress.downloaded / updateProgress.total * 100)}%` : "准备中…"}</small></div><span><i style={{ width: `${updateProgress?.total ? Math.min(100, updateProgress.downloaded / updateProgress.total * 100) : 8}%` }} /></span></div>}
+              {updateMessage && <p className="settings-success"><Check size={14} /> {updateMessage}</p>}
+              {updateError && <p className="settings-warning"><AlertTriangle size={14} /> {updateError}</p>}
+              <div className="flag-list update-preference-list">
+                <label><span><strong>启动后自动检查</strong><small>启动约两秒后静默检查；离线时不打扰阅读。</small></span><input type="checkbox" checked={updatePreferences.autoCheck} onChange={(event) => changeUpdatePreference({ ...updatePreferences, autoCheck: event.target.checked, autoInstall: event.target.checked ? updatePreferences.autoInstall : false })} /><i /></label>
+                <label><span><strong>自动安装并重启</strong><small>发现新版本后自动下载、验签和安装；默认关闭。</small></span><input type="checkbox" checked={updatePreferences.autoInstall} onChange={(event) => changeUpdatePreference({ ...updatePreferences, autoInstall: event.target.checked })} /><i /></label>
+              </div>
+              <p className="settings-footnote">更新包必须通过内置公钥验签。关闭自动安装后，软件只提示新版本，不会自行重启。</p>
+            </section>
+          )}
 
           <section className="settings-section">
             <div className="settings-section-title"><span><HardDrive size={18} /></span><div><h2>本地数据</h2><p>文档和用户写入保存在当前浏览器的 IndexedDB。</p></div></div>
