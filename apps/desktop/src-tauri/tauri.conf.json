@@ -29,6 +29,7 @@
   "bundle": {
     "active": true,
     "targets": ["nsis"],
+    "createUpdaterArtifacts": true,
     "category": "Productivity",
     "shortDescription": "本地优先、证据优先的 AI 原生阅读器",
     "longDescription": "阅微 / MicroRead：开源、本地优先、证据优先的 AI 原生阅读器。",
@@ -37,6 +38,17 @@
       "nsis": {
         "languages": ["SimpChinese", "English"],
         "installMode": "currentUser"
+      }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEM3Mjk3RjAwREFFNjA3NkUKUldSdUIrYmFBSDhweDVwN25OT2lRTmM5bkFuSGp0N3hwU21aeGI3dVNwNlVCTEIxZ0tNdmRHblAK",
+      "endpoints": [
+        "https://github.com/LoveLearnLearning/MicroRead/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
       }
     }
   }

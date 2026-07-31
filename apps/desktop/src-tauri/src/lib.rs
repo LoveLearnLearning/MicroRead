@@ -1,7 +1,6 @@
 use std::{
     collections::{HashMap, HashSet},
-    env,
-    fs,
+    env, fs,
     net::IpAddr,
     path::PathBuf,
     time::Duration,
@@ -20,6 +19,9 @@ use uuid::Uuid;
 const MAX_HTML_BYTES: usize = 5 * 1024 * 1024;
 const MAX_REDIRECTS: usize = 4;
 const AI_SETTINGS_FILE: &str = "ai-settings.json";
+const AI_CREDENTIAL_SERVICE: &str = "io.github.micro-read";
+const AI_CREDENTIAL_ACCOUNT: &str = "deepseek-api-key";
+// Kept only to migrate settings written by versions that stored an XOR-obfuscated key in JSON.
 const OBFUSCATION_KEY: &[u8] = b"micro-read-local-obfuscation-key-v1";
 
 fn xor_encode(input: &[u8]) -> Vec<u8> {
@@ -30,6 +32,7 @@ fn xor_encode(input: &[u8]) -> Vec<u8> {
         .collect()
 }
 
+#[cfg(test)]
 fn base64_encode(input: &[u8]) -> String {
     const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut output = String::with_capacity((input.len() + 2) / 3 * 4);
@@ -56,7 +59,10 @@ fn base64_encode(input: &[u8]) -> String {
 
 fn base64_decode(input: &str) -> Result<Vec<u8>, String> {
     const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let cleaned: Vec<u8> = input.bytes().filter(|byte| !byte.is_ascii_whitespace()).collect();
+    let cleaned: Vec<u8> = input
+        .bytes()
+        .filter(|byte| !byte.is_ascii_whitespace())
+        .collect();
     if cleaned.len() % 4 != 0 {
         return Err("base64 length invalid".to_string());
     }
@@ -86,6 +92,7 @@ fn base64_decode(input: &str) -> Result<Vec<u8>, String> {
     Ok(output)
 }
 
+#[cfg(test)]
 fn obfuscate(input: &str) -> String {
     base64_encode(&xor_encode(input.as_bytes()))
 }
@@ -99,8 +106,22 @@ fn deobfuscate(input: &str) -> Result<String, String> {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct AiSettings {
+    has_api_key: bool,
     #[serde(default)]
-    api_key: String,
+    base_url: String,
+    #[serde(default)]
+    model: String,
+    #[serde(default = "default_requests_per_hour")]
+    requests_per_hour: u32,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AiSettingsUpdate {
+    #[serde(default)]
+    api_key: Option<String>,
+    #[serde(default)]
+    clear_api_key: bool,
     #[serde(default)]
     base_url: String,
     #[serde(default)]
@@ -116,10 +137,25 @@ fn default_requests_per_hour() -> u32 {
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct StoredAiSettings {
-    api_key: String,
+    #[serde(default, skip_serializing)]
+    api_key: Option<String>,
+    #[serde(default)]
     base_url: String,
+    #[serde(default)]
     model: String,
+    #[serde(default = "default_requests_per_hour")]
     requests_per_hour: u32,
+}
+
+impl Default for StoredAiSettings {
+    fn default() -> Self {
+        Self {
+            api_key: None,
+            base_url: String::new(),
+            model: String::new(),
+            requests_per_hour: default_requests_per_hour(),
+        }
+    }
 }
 
 fn ai_settings_path(app: &AppHandle) -> Result<PathBuf, String> {
@@ -131,32 +167,130 @@ fn ai_settings_path(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(dir.join(AI_SETTINGS_FILE))
 }
 
-fn load_stored_settings(app: &AppHandle) -> Option<AiSettings> {
-    let path = ai_settings_path(app).ok()?;
-    let content = fs::read_to_string(&path).ok()?;
-    let stored: StoredAiSettings = serde_json::from_str(&content).ok()?;
-    let api_key = deobfuscate(&stored.api_key).unwrap_or_default();
-    let base_url = deobfuscate(&stored.base_url).unwrap_or_default();
-    let model = deobfuscate(&stored.model).unwrap_or_default();
-    Some(AiSettings {
-        api_key,
-        base_url,
-        model,
-        requests_per_hour: stored.requests_per_hour,
-    })
+fn read_stored_settings_from_path(path: &PathBuf) -> Result<StoredAiSettings, String> {
+    let content = match fs::read_to_string(path) {
+        Ok(content) => content,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(StoredAiSettings::default())
+        }
+        Err(error) => return Err(format!("无法读取 AI 配置：{error}")),
+    };
+    serde_json::from_str(&content).map_err(|error| format!("AI 配置文件已损坏：{error}"))
 }
 
-fn save_stored_settings(app: &AppHandle, settings: &AiSettings) -> Result<(), String> {
+fn write_stored_settings_to_path(
+    path: &PathBuf,
+    settings: &StoredAiSettings,
+) -> Result<(), String> {
+    let content = serde_json::to_string_pretty(settings)
+        .map_err(|err| format!("无法序列化 AI 配置：{err}"))?;
+    fs::write(path, content).map_err(|err| format!("无法写入 AI 配置：{err}"))
+}
+
+fn api_key_entry() -> Result<keyring::v1::Entry, String> {
+    credential_entry(AI_CREDENTIAL_SERVICE, AI_CREDENTIAL_ACCOUNT)
+}
+
+fn credential_entry(service: &str, account: &str) -> Result<keyring::v1::Entry, String> {
+    keyring::v1::Entry::new(service, account)
+        .map_err(|error| format!("无法访问系统凭据库：{error}"))
+}
+
+fn load_credential_api_key() -> Result<Option<String>, String> {
+    match api_key_entry()?.get_password() {
+        Ok(value) if !value.trim().is_empty() => Ok(Some(value)),
+        Ok(_) => Ok(None),
+        Err(keyring::v1::Error::NoEntry) => Ok(None),
+        Err(error) => Err(format!("无法读取系统凭据库中的 API Key：{error}")),
+    }
+}
+
+fn save_credential_api_key(api_key: &str) -> Result<(), String> {
+    api_key_entry()?
+        .set_password(api_key)
+        .map_err(|error| format!("无法将 API Key 写入系统凭据库：{error}"))
+}
+
+fn delete_credential_api_key() -> Result<(), String> {
+    match api_key_entry()?.delete_credential() {
+        Ok(()) | Err(keyring::v1::Error::NoEntry) => Ok(()),
+        Err(error) => Err(format!("无法从系统凭据库删除 API Key：{error}")),
+    }
+}
+
+fn decode_legacy_non_secret_settings(stored: &mut StoredAiSettings) -> Result<(), String> {
+    if stored.api_key.is_none() {
+        return Ok(());
+    }
+    stored.base_url = if stored.base_url.is_empty() {
+        String::new()
+    } else {
+        deobfuscate(&stored.base_url)
+            .map_err(|_| "旧版 Base URL 无法迁移，请重新填写。".to_string())?
+    };
+    stored.model = if stored.model.is_empty() {
+        String::new()
+    } else {
+        deobfuscate(&stored.model).map_err(|_| "旧版模型配置无法迁移，请重新填写。".to_string())?
+    };
+    Ok(())
+}
+
+fn load_persisted_ai_settings(
+    app: &AppHandle,
+) -> Result<(StoredAiSettings, Option<String>), String> {
+    let path = ai_settings_path(app)?;
+    let mut stored = read_stored_settings_from_path(&path)?;
+    let mut api_key = load_credential_api_key()?;
+    decode_legacy_non_secret_settings(&mut stored)?;
+    let legacy_api_key = stored.api_key.take();
+
+    if api_key.is_none() {
+        if let Some(encoded) = legacy_api_key.as_deref().filter(|value| !value.is_empty()) {
+            let migrated = deobfuscate(encoded)
+                .map_err(|_| "旧版 API Key 无法迁移，请重新填写。".to_string())?;
+            if !migrated.trim().is_empty() {
+                save_credential_api_key(migrated.trim())?;
+                api_key = Some(migrated);
+            }
+        }
+    }
+
+    if legacy_api_key.is_some() {
+        write_stored_settings_to_path(&path, &stored)?;
+    }
+    Ok((stored, api_key))
+}
+
+fn save_ai_settings_update(app: &AppHandle, update: AiSettingsUpdate) -> Result<(), String> {
+    if update.clear_api_key
+        && update
+            .api_key
+            .as_deref()
+            .is_some_and(|key| !key.trim().is_empty())
+    {
+        return Err("不能同时替换和清除 API Key。".to_string());
+    }
+
+    if update.clear_api_key {
+        delete_credential_api_key()?;
+    } else if let Some(api_key) = update
+        .api_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|key| !key.is_empty())
+    {
+        save_credential_api_key(api_key)?;
+    }
+
     let path = ai_settings_path(app)?;
     let stored = StoredAiSettings {
-        api_key: obfuscate(&settings.api_key),
-        base_url: obfuscate(&settings.base_url),
-        model: obfuscate(&settings.model),
-        requests_per_hour: settings.requests_per_hour,
+        api_key: None,
+        base_url: update.base_url.trim().to_string(),
+        model: update.model.trim().to_string(),
+        requests_per_hour: update.requests_per_hour.max(1),
     };
-    let content = serde_json::to_string_pretty(&stored)
-        .map_err(|err| format!("无法序列化 AI 配置：{err}"))?;
-    fs::write(&path, content).map_err(|err| format!("无法写入 AI 配置：{err}"))
+    write_stored_settings_to_path(&path, &stored)
 }
 
 struct ResolvedAiConfig {
@@ -167,42 +301,45 @@ struct ResolvedAiConfig {
     requests_per_hour: u32,
 }
 
-fn resolve_ai_config(app: Option<&AppHandle>) -> ResolvedAiConfig {
-    let stored = app.and_then(load_stored_settings);
-    let env_key = env::var("OPENAI_API_KEY").ok().filter(|value| !value.trim().is_empty());
-    let env_model = env::var("AI_MODEL").ok().filter(|value| !value.trim().is_empty());
-    let env_base = env::var("DEEPSEEK_BASE_URL").ok().filter(|value| !value.trim().is_empty());
-    let env_limit = env::var("AI_REQUESTS_PER_HOUR").ok().and_then(|value| value.parse::<u32>().ok());
-    let api_key = stored
-        .as_ref()
-        .map(|settings| settings.api_key.clone())
+fn resolve_ai_config(app: Option<&AppHandle>) -> Result<ResolvedAiConfig, String> {
+    let (stored, stored_api_key) = match app {
+        Some(app) => load_persisted_ai_settings(app)?,
+        None => (StoredAiSettings::default(), None),
+    };
+    let env_key = env::var("OPENAI_API_KEY")
+        .ok()
+        .filter(|value| !value.trim().is_empty());
+    let env_model = env::var("AI_MODEL")
+        .ok()
+        .filter(|value| !value.trim().is_empty());
+    let env_base = env::var("DEEPSEEK_BASE_URL")
+        .ok()
+        .filter(|value| !value.trim().is_empty());
+    let env_limit = env::var("AI_REQUESTS_PER_HOUR")
+        .ok()
+        .and_then(|value| value.parse::<u32>().ok());
+    let api_key = stored_api_key
         .filter(|value| !value.trim().is_empty())
         .or(env_key)
         .unwrap_or_default();
-    let model = stored
-        .as_ref()
-        .map(|settings| settings.model.clone())
+    let model = Some(stored.model.clone())
         .filter(|value| !value.trim().is_empty())
         .or(env_model)
         .unwrap_or_else(|| "deepseek-v4-flash".to_string());
-    let base_url = stored
-        .as_ref()
-        .map(|settings| settings.base_url.clone())
+    let base_url = Some(stored.base_url.clone())
         .filter(|value| !value.trim().is_empty())
         .or(env_base)
         .unwrap_or_else(|| "https://api.deepseek.com".to_string());
-    let requests_per_hour = stored
-        .as_ref()
-        .map(|settings| settings.requests_per_hour)
+    let requests_per_hour = Some(stored.requests_per_hour)
         .filter(|value| *value > 0)
         .or(env_limit)
         .unwrap_or(30);
-    ResolvedAiConfig {
+    Ok(ResolvedAiConfig {
         api_key,
         model,
         base_url,
         requests_per_hour,
-    }
+    })
 }
 
 #[derive(Serialize)]
@@ -347,9 +484,9 @@ struct ImportedWebArticle {
 }
 
 #[tauri::command]
-fn runtime_health(app: AppHandle) -> RuntimeHealth {
-    let config = resolve_ai_config(Some(&app));
-    RuntimeHealth {
+fn runtime_health(app: AppHandle) -> Result<RuntimeHealth, String> {
+    let config = resolve_ai_config(Some(&app))?;
+    Ok(RuntimeHealth {
         ok: true,
         ai: AiHealth {
             provider: "DeepSeek",
@@ -359,12 +496,12 @@ fn runtime_health(app: AppHandle) -> RuntimeHealth {
         storage: "indexeddb",
         sync: "local-only",
         timestamp: Utc::now().to_rfc3339(),
-    }
+    })
 }
 
 #[tauri::command]
 async fn request_ai(app: AppHandle, request: AiRequest) -> Result<PlatformAiResult, String> {
-    let config = resolve_ai_config(Some(&app));
+    let config = resolve_ai_config(Some(&app))?;
     request_ai_with_config(config, request).await
 }
 
@@ -532,8 +669,11 @@ async fn request_ai_with_config(
 }
 
 #[tauri::command]
-async fn translate_chunks(app: AppHandle, request: TranslationRequest) -> Result<TranslationBatchResult, String> {
-    let config = resolve_ai_config(Some(&app));
+async fn translate_chunks(
+    app: AppHandle,
+    request: TranslationRequest,
+) -> Result<TranslationBatchResult, String> {
+    let config = resolve_ai_config(Some(&app))?;
     translate_chunks_with_config(config, request).await
 }
 
@@ -897,18 +1037,30 @@ fn normalize_text(value: String) -> String {
 }
 
 #[tauri::command]
-fn load_ai_settings(app: AppHandle) -> Option<AiSettings> {
-    load_stored_settings(&app)
+fn load_ai_settings(app: AppHandle) -> Result<AiSettings, String> {
+    let (stored, api_key) = load_persisted_ai_settings(&app)?;
+    Ok(AiSettings {
+        has_api_key: api_key.is_some(),
+        base_url: stored.base_url,
+        model: stored.model,
+        requests_per_hour: if stored.requests_per_hour > 0 {
+            stored.requests_per_hour
+        } else {
+            default_requests_per_hour()
+        },
+    })
 }
 
 #[tauri::command]
-fn save_ai_settings(app: AppHandle, settings: AiSettings) -> Result<(), String> {
-    save_stored_settings(&app, &settings)
+fn save_ai_settings(app: AppHandle, settings: AiSettingsUpdate) -> Result<(), String> {
+    save_ai_settings_update(&app, settings)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             runtime_health,
             request_ai,
@@ -1000,7 +1152,10 @@ mod tests {
         };
         let runtime = tokio::runtime::Runtime::new().expect("tokio runtime should start");
         let result = runtime
-            .block_on(translate_chunks_with_config(resolve_ai_config(None), request))
+            .block_on(translate_chunks_with_config(
+                resolve_ai_config(None).expect("environment config should resolve"),
+                request,
+            ))
             .expect("desktop translation command should reach DeepSeek");
         assert_eq!(result.translations[0].id, "translation-live-chunk");
         assert!(!result.translations[0].text.trim().is_empty());
@@ -1027,7 +1182,10 @@ mod tests {
 
         let runtime = tokio::runtime::Runtime::new().expect("tokio runtime should start");
         let result = runtime
-            .block_on(request_ai_with_config(resolve_ai_config(None), request))
+            .block_on(request_ai_with_config(
+                resolve_ai_config(None).expect("environment config should resolve"),
+                request,
+            ))
             .expect("desktop AI command should reach DeepSeek");
         assert!(!result.answer_markdown.trim().is_empty());
         assert_eq!(result.usage.model, "deepseek-v4-flash");
@@ -1052,5 +1210,61 @@ mod tests {
     #[test]
     fn base64_decode_rejects_bad_length() {
         assert!(base64_decode("abc").is_err());
+    }
+
+    #[test]
+    fn missing_ai_settings_file_loads_defaults() {
+        let path = std::env::temp_dir().join(format!("micro-read-missing-{}.json", Uuid::new_v4()));
+        let settings =
+            read_stored_settings_from_path(&path).expect("missing settings should use defaults");
+        assert!(settings.base_url.is_empty());
+        assert!(settings.model.is_empty());
+        assert_eq!(settings.requests_per_hour, 30);
+    }
+
+    #[test]
+    fn serialized_ai_settings_never_contains_api_key() {
+        let settings = StoredAiSettings {
+            api_key: Some("legacy-secret".to_string()),
+            base_url: "https://api.deepseek.com".to_string(),
+            model: "deepseek-v4-flash".to_string(),
+            requests_per_hour: 30,
+        };
+        let value = serde_json::to_value(settings).expect("settings should serialize");
+        assert!(value.get("apiKey").is_none());
+    }
+
+    #[test]
+    fn legacy_non_secret_settings_are_preserved_during_migration() {
+        let mut settings = StoredAiSettings {
+            api_key: Some(obfuscate("sk-legacy")),
+            base_url: obfuscate("https://api.deepseek.com"),
+            model: obfuscate("deepseek-v4-flash"),
+            requests_per_hour: 30,
+        };
+        decode_legacy_non_secret_settings(&mut settings).expect("legacy settings should decode");
+        assert_eq!(settings.base_url, "https://api.deepseek.com");
+        assert_eq!(settings.model, "deepseek-v4-flash");
+    }
+
+    #[test]
+    fn system_credential_store_round_trip() {
+        let account = format!("test-{}", Uuid::new_v4());
+        let entry = credential_entry(AI_CREDENTIAL_SERVICE, &account)
+            .expect("system credential entry should be available");
+        entry
+            .set_password("temporary-test-secret")
+            .expect("credential should save");
+        assert_eq!(
+            entry.get_password().expect("credential should load"),
+            "temporary-test-secret"
+        );
+        entry
+            .delete_credential()
+            .expect("temporary credential should be removed");
+        assert!(matches!(
+            entry.get_password(),
+            Err(keyring::v1::Error::NoEntry)
+        ));
     }
 }

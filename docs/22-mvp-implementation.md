@@ -28,6 +28,7 @@
 | FR-NOTE-001/002/003 | 高亮、批注、书签、颜色模型、原文回跳、知识卡 | 浏览器 E2E + IndexedDB |
 | FR-AI-001/002/003/004 | 选区解释、文档问答、阅读地图、术语/语境解释 | Web API Route + Desktop Rust Command |
 | 全文翻译 | 英文文献分段渐进翻译；双栏同步滚动；译文模式点击段落切换原文；暂停续传与本地缓存 | Web/Desktop E2E + DeepSeek 原生冒烟测试 |
+| Desktop 自动更新 | 启动静默检查、设置页手动检查、可选自动安装；GitHub Release 元数据与 minisign 验签 | 发布契约测试 + 签名 NSIS 构建 |
 | AI 输出规范 | 结构化 Claim、系统生成 Citation、引用 ID 白名单、事实/归纳/推断/不确定标记 | 协议单元测试 |
 | FR-SYNC-001/002/006 | IndexedDB 离线读取与写入、本地操作日志、LOCAL ONLY 可见状态 | 刷新恢复 E2E |
 | FR-EXPORT-001/002 | 知识卡 Markdown、包含 PDF 原件的版本化 `.anr-backup` 备份与恢复 | 单元测试 |
@@ -66,7 +67,6 @@
 - 对象存储、Temporal 摄取工作流、OCR、EPUB
 - 真正的 Push/Pull 云同步、设备游标与冲突合并
 - 多文档比较、浏览器扩展和移动端
-- 签名安装包与自动更新发布
 
 仓库已经为这些能力保留领域对象、AI 协议和 `sync_operations` 操作日志；接入时不应把 IndexedDB 数据层直接扩写成一个隐式云后端。
 
@@ -83,6 +83,6 @@ cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml
 corepack pnpm build
 ```
 
-当前自动化覆盖：26 个 Web/协议/安全测试、4 个默认 Rust 测试、2 个显式 DeepSeek 原生冒烟测试、3 条 Web Chromium 端到端流程和 1 条 Desktop 静态壳端到端流程。
+当前自动化覆盖：31 个 Web/协议/安全测试、3 个 Desktop 发布契约测试、11 个默认 Rust 测试、2 个显式 DeepSeek 原生冒烟测试、3 条 Web Chromium 端到端流程和 1 条 Desktop 静态壳端到端流程。
 
 Windows 验收机基线：加入全文翻译后的 release EXE 13.34 MiB；首次启动到可响应窗口约 500 ms，随后两次约 105–108 ms。Web E2E 覆盖完整阅读/高亮恢复、PDF 渐进导入，以及全文翻译的双向同步、原文切换和缓存恢复。

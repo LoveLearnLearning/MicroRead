@@ -645,6 +645,12 @@ kbd { padding: 2px 6px; color: var(--ink-faint); border: 1px solid var(--line); 
 .ops-status-grid strong { font-size: 10px; }.ops-status-grid small { color: var(--ink-faint); font-size: 8px; }
 .settings-warning { display: flex; align-items: flex-start; gap: 7px; margin: 12px 0 0; padding: 9px 10px; border-radius: 7px; color: #88672b; background: var(--amber-soft); font-size: 9px; line-height: 1.5; }
 .settings-warning svg { flex: none; }
+.desktop-update-notice { position: fixed; z-index: 120; right: 18px; bottom: 18px; width: min(430px, calc(100vw - 36px)); display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 10px; padding: 14px; border: 1px solid #a9c5b9; border-radius: 12px; background: rgba(251,250,246,.98); box-shadow: var(--shadow-lg); }
+.desktop-update-notice > div { min-width: 0; display: grid; gap: 5px; }
+.desktop-update-notice strong { font-size: 11px; }
+.desktop-update-notice p { max-height: 42px; margin: 0; overflow: hidden; color: var(--ink-soft); font-size: 9px; line-height: 1.5; }
+.desktop-update-progress { height: 4px; overflow: hidden; border-radius: 2px; background: var(--surface-muted); }
+.desktop-update-progress i { display: block; height: 100%; border-radius: inherit; background: var(--accent); transition: width 180ms ease; }
 .flag-list { display: grid; gap: 1px; overflow: hidden; border: 1px solid var(--line); border-radius: 9px; background: var(--line); }
 .flag-list label { min-height: 57px; position: relative; display: flex; align-items: center; justify-content: space-between; padding: 10px 13px; background: var(--surface-raised); cursor: pointer; }
 .flag-list label > span { display: grid; gap: 3px; }.flag-list strong { font-size: 10px; }.flag-list small { color: var(--ink-faint); font-size: 8px; }

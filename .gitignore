@@ -9,6 +9,7 @@ test-results/
 .env
 .env.local
 .env.*.local
+*.key
 next-env.d.ts
 *.tsbuildinfo
 .DS_Store

@@ -2,6 +2,7 @@ import { lazy, Suspense } from "react";
 import { AppShell } from "@/components/app-shell";
 import { ReaderWorkspace } from "@/components/reader-workspace";
 import { useDesktopRouter } from "./router";
+import { DesktopUpdateManager } from "./update-manager";
 
 const LibraryPage = lazy(() => import("@/app/library/page"));
 const TopicsPage = lazy(() => import("@/app/topics/page"));
@@ -24,5 +25,10 @@ export function DesktopApp() {
     content = <LibraryPage />;
   }
 
-  return <Suspense fallback={<main className="route-loading" aria-label="正在加载页面" />}>{content}</Suspense>;
+  return (
+    <>
+      <Suspense fallback={<main className="route-loading" aria-label="正在加载页面" />}>{content}</Suspense>
+      <DesktopUpdateManager />
+    </>
+  );
 }
