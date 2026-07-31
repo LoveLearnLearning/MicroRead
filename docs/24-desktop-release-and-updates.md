@@ -1,5 +1,7 @@
 # Desktop 发布与自动更新
 
+Desktop 不注册 Web/PWA Service Worker。启动初始化只会清理历史版本遗留的 `micro-read-*` Cache Storage 和 Service Worker，并在确有遗留状态时自动重载一次；IndexedDB 阅读数据不会被清除。
+
 ## 用户能力
 
 - 设置页可以手动检查、下载并安装更新。
