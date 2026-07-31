@@ -18,23 +18,38 @@ jobs:
         with:
           node-version: "24"
 
+      - uses: pnpm/action-setup@v4
+        id: pnpm-install
+        with:
+          version: 9.15.1
+          run_install: false
+
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Enable corepack + pnpm
+      - name: Get pnpm store path
+        id: pnpm-cache
+        shell: pwsh
         run: |
-          corepack enable
-          corepack prepare pnpm@9.15.1 --activate
+          "store_path=$(pnpm store path)" >> $env:GITHUB_OUTPUT
+
+      - uses: actions/cache@v5
+        name: Setup pnpm cache
+        with:
+          path: ${{ steps.pnpm-cache.outputs.store_path }}
+          key: ${{ runner.os }}-pnpm-release-${{ hashFiles('**/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-pnpm-release-
 
       - name: Install dependencies
-        run: corepack pnpm install --frozen-lockfile
+        run: pnpm install --frozen-lockfile
 
       - name: Build Web + Desktop bundles (NSIS + portable EXE)
         env:
           TAURI_PRIVATE_KEY: ${{ secrets.TAURI_PRIVATE_KEY }}
           TAURI_KEY_PASSWORD: ${{ secrets.TAURI_KEY_PASSWORD }}
-        run: corepack pnpm build:desktop
+        run: pnpm build:desktop
 
       - name: Collect artifacts
         id: collect
