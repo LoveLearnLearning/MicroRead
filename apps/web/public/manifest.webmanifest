@@ -1,0 +1,10 @@
+{
+  "name": "AI Native Reader",
+  "short_name": "Native Reader",
+  "description": "证据优先的 AI 原生阅读器",
+  "start_url": "/library",
+  "display": "standalone",
+  "background_color": "#f5f2e9",
+  "theme_color": "#f5f2e9",
+  "lang": "zh-CN"
+}

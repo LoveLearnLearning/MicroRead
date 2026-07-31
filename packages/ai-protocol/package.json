@@ -1,0 +1,19 @@
+{
+  "name": "@reader/ai-protocol",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": { ".": "./src/index.ts" },
+  "dependencies": { "@reader/domain": "workspace:*", "zod": "^4.1.0" },
+  "scripts": {
+    "build": "tsc --noEmit",
+    "test": "vitest run --passWithNoTests",
+    "typecheck": "tsc --noEmit",
+    "lint": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "eslint": "^9.36.0",
+    "typescript": "^5.9.2",
+    "vitest": "^3.2.4"
+  }
+}

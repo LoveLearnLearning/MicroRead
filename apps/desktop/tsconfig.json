@@ -1,0 +1,21 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["DOM", "DOM.Iterable", "ES2023"],
+    "jsx": "react-jsx",
+    "noEmit": true,
+    "types": ["vite/client"],
+    "paths": {
+      "@/lib/platform": ["./src/platform.ts"],
+      "@/*": ["../web/*"],
+      "@reader/domain": ["../../packages/domain/src/index.ts"],
+      "@reader/reader-core": ["../../packages/reader-core/src/index.ts"],
+      "@reader/ai-protocol": ["../../packages/ai-protocol/src/index.ts"],
+      "next/link": ["./src/shims/next-link.tsx"],
+      "next/navigation": ["./src/shims/next-navigation.ts"],
+      "next/dynamic": ["./src/shims/next-dynamic.tsx"]
+    }
+  },
+  "include": ["src/**/*.ts", "src/**/*.tsx", "../web/**/*.ts", "../web/**/*.tsx", "../../packages/**/*.ts"],
+  "exclude": ["../web/app/api/**", "../web/.next/**", "../web/tests/**"]
+}

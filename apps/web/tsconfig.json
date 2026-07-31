@@ -1,0 +1,17 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "plugins": [{ "name": "next" }],
+    "allowJs": false,
+    "incremental": true,
+    "noEmit": true,
+    "paths": {
+      "@/*": ["./*"],
+      "@reader/domain": ["../../packages/domain/src/index.ts"],
+      "@reader/reader-core": ["../../packages/reader-core/src/index.ts"],
+      "@reader/ai-protocol": ["../../packages/ai-protocol/src/index.ts"]
+    }
+  },
+  "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx", ".next/types/**/*.ts"],
+  "exclude": ["node_modules"]
+}

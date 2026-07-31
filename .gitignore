@@ -1,0 +1,15 @@
+node_modules/
+.next/
+.turbo/
+dist/
+target/
+coverage/
+playwright-report/
+test-results/
+.env
+.env.local
+.env.*.local
+next-env.d.ts
+*.tsbuildinfo
+.DS_Store
+Thumbs.db
