@@ -42,6 +42,18 @@ test("PDF import opens progressively and extracts searchable text", async ({ pag
   await expect(page.getByText("evidence-sample", { exact: true })).toBeVisible();
   await expect(page.locator("#pdf-page-0")).toBeVisible({ timeout: 20_000 });
   await expect(page.getByText("可问答", { exact: true })).toBeVisible({ timeout: 20_000 });
+
+  const titleText = page.locator("#pdf-page-0 .textLayer span").filter({ hasText: "Evidence First Reading" });
+  await expect(titleText).toBeVisible();
+  const titleBounds = await titleText.boundingBox();
+  expect(titleBounds).not.toBeNull();
+  await page.mouse.move(titleBounds!.x + 2, titleBounds!.y + titleBounds!.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(titleBounds!.x + titleBounds!.width - 2, titleBounds!.y + titleBounds!.height / 2, { steps: 12 });
+  await page.mouse.up();
+
+  await expect.poll(() => page.evaluate(() => window.getSelection()?.toString().trim() ?? "")).toContain("Evidence First Reading");
+  await expect(page.locator(".selection-toolbar").getByRole("button", { name: /解释/ })).toBeVisible();
 });
 
 test("full translation supports parallel reading, translation-only reveal, and local cache", async ({ page }) => {
@@ -81,6 +93,17 @@ test("full translation supports parallel reading, translation-only reveal, and l
   await firstChunk.click();
   await expect(firstChunk).toContainText("在数字阅读中");
   await expect(firstChunk).toContainText("点击恢复译文");
+
+  await page.getByRole("button", { name: /显示译文：段落 1/ }).click();
+  const translatedParagraph = firstChunk.locator("p");
+  const translatedBounds = await translatedParagraph.boundingBox();
+  expect(translatedBounds).not.toBeNull();
+  await page.mouse.move(translatedBounds!.x + 2, translatedBounds!.y + 10);
+  await page.mouse.down();
+  await page.mouse.move(translatedBounds!.x + Math.min(180, translatedBounds!.width - 2), translatedBounds!.y + 10, { steps: 10 });
+  await page.mouse.up();
+  await expect.poll(() => page.evaluate(() => window.getSelection()?.toString().trim().length ?? 0)).toBeGreaterThan(2);
+  await expect(page.locator(".selection-toolbar").getByRole("button", { name: /解释/ })).toBeVisible();
 
   const requestsBeforeReload = batchRequests;
   await page.reload();

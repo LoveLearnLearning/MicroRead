@@ -78,6 +78,8 @@ type TranslationViewMode = "parallel" | "translation";
 interface ActiveSelection {
   anchor: Anchor;
   context: string;
+  aiContext: string;
+  surface: "source" | "translation";
   rect: { left: number; top: number };
 }
 
@@ -138,10 +140,10 @@ export function ReaderWorkspace({ sourceId }: { sourceId: string }) {
       const target = event.target as HTMLElement | null;
       const typing = target?.matches("input, textarea, [contenteditable=true]");
       if (typing) return;
-      if (event.key.toLocaleLowerCase() === "h" && selection) {
+      if (event.key.toLocaleLowerCase() === "h" && selection?.surface === "source") {
         event.preventDefault();
         void saveHighlight(selection.anchor, "amber");
-      } else if (event.key.toLocaleLowerCase() === "n" && selection) {
+      } else if (event.key.toLocaleLowerCase() === "n" && selection?.surface === "source") {
         event.preventDefault();
         openNoteComposer(selection.anchor);
       } else if (event.key.toLocaleLowerCase() === "a" && selection) {
@@ -179,7 +181,7 @@ export function ReaderWorkspace({ sourceId }: { sourceId: string }) {
 
   function handleDocumentMouseUp(event: MouseEvent<HTMLElement>) {
     const target = event.target as HTMLElement;
-    if (target.closest("a, button, input, textarea")) return;
+    if (target.closest("a, input, textarea, .translation-header, .translation-progress-bar")) return;
     const nativeSelection = window.getSelection();
     const exact = nativeSelection?.toString().replace(/\s+/g, " ").trim() || "";
     if (!nativeSelection || nativeSelection.rangeCount === 0 || exact.length < 2) {
@@ -190,11 +192,19 @@ export function ReaderWorkspace({ sourceId }: { sourceId: string }) {
     const startElement = (range.startContainer.nodeType === Node.ELEMENT_NODE
       ? range.startContainer
       : range.startContainer.parentElement) as HTMLElement | null;
-    const contextElement = startElement?.closest<HTMLElement>("[data-page-index], [data-block-index]");
+    const translationElement = startElement?.closest<HTMLElement>("[data-translation-index]");
+    const contextElement = translationElement ?? startElement?.closest<HTMLElement>("[data-page-index], [data-block-index]");
     if (!contextElement) return;
-    const context = contextElement.textContent?.replace(/\s+/g, " ").trim() || exact;
+    const surface = translationElement ? "translation" : "source";
+    const textContainer = translationElement?.querySelector<HTMLElement>(".translation-chunk-text") ?? contextElement;
+    const context = textContainer.textContent?.replace(/\s+/g, " ").trim() || exact;
+    const translationIndex = numberData(translationElement?.dataset.translationIndex);
+    const translatedChunk = translationIndex === undefined ? undefined : translation?.chunks[translationIndex];
+    const aiContext = translatedChunk
+      ? `用户选中的中文译文：${context}\n\n对应英文原文：${translatedChunk.sourceText}`
+      : context;
     const preRange = range.cloneRange();
-    preRange.selectNodeContents(contextElement);
+    preRange.selectNodeContents(textContainer);
     preRange.setEnd(range.startContainer, range.startOffset);
     const startOffset = preRange.toString().replace(/\s+/g, " ").length;
     const bounds = range.getBoundingClientRect();
@@ -202,14 +212,16 @@ export function ReaderWorkspace({ sourceId }: { sourceId: string }) {
       sourceId: currentSource.id,
       exact,
       context,
-      pageIndex: numberData(contextElement.dataset.pageIndex),
-      blockIndex: numberData(contextElement.dataset.blockIndex),
+      pageIndex: numberData(contextElement.dataset.translationPage ?? contextElement.dataset.pageIndex),
+      blockIndex: numberData(contextElement.dataset.translationBlock ?? contextElement.dataset.blockIndex),
       startOffset,
       endOffset: startOffset + exact.length,
     });
     setSelection({
       anchor,
       context,
+      aiContext,
+      surface,
       rect: {
         left: Math.min(window.innerWidth - 310, Math.max(12, bounds.left + bounds.width / 2 - 145)),
         top: Math.max(12, bounds.top - 52),
@@ -307,7 +319,7 @@ export function ReaderWorkspace({ sourceId }: { sourceId: string }) {
       id: `${currentSource.id}:selection:${activeSelection.anchor.id}`,
       sourceId: currentSource.id,
       sourceTitle: currentSource.title,
-      content: activeSelection.context,
+      content: activeSelection.aiContext,
       pageIndex: activeSelection.anchor.pageIndex,
       blockIndex: activeSelection.anchor.blockIndex,
     };
@@ -652,6 +664,7 @@ export function ReaderWorkspace({ sourceId }: { sourceId: string }) {
             revealedOriginals={revealedOriginals}
             paneRef={translationPaneRef}
             onScroll={syncFromTranslation}
+            onSelection={handleDocumentMouseUp}
             onModeChange={setTranslationViewMode}
             onStart={(restart) => void startFullTranslation(restart)}
             onPause={pauseFullTranslation}
@@ -703,8 +716,8 @@ export function ReaderWorkspace({ sourceId }: { sourceId: string }) {
       {selection && (
         <div className="selection-toolbar" style={{ left: selection.rect.left, top: selection.rect.top }}>
           <button onClick={() => void askFromSelection(selection)}><Sparkles size={14} /> 解释</button>
-          <button onClick={() => void saveHighlight(selection.anchor, "amber")}><Highlighter size={14} /> 高亮</button>
-          <button onClick={() => openNoteComposer(selection.anchor)}><StickyNote size={14} /> 笔记</button>
+          {selection.surface === "source" && <button onClick={() => void saveHighlight(selection.anchor, "amber")}><Highlighter size={14} /> 高亮</button>}
+          {selection.surface === "source" && <button onClick={() => openNoteComposer(selection.anchor)}><StickyNote size={14} /> 笔记</button>}
           <span />
           <button className="selection-close" aria-label="关闭" onClick={() => setSelection(null)}><X size={14} /></button>
         </div>
@@ -721,6 +734,7 @@ function TranslationPane({
   revealedOriginals,
   paneRef,
   onScroll,
+  onSelection,
   onModeChange,
   onStart,
   onPause,
@@ -734,6 +748,7 @@ function TranslationPane({
   revealedOriginals: Set<string>;
   paneRef: RefObject<HTMLDivElement | null>;
   onScroll: () => void;
+  onSelection: (event: MouseEvent<HTMLElement>) => void;
   onModeChange: (mode: TranslationViewMode) => void;
   onStart: (restart: boolean) => void;
   onPause: () => void;
@@ -745,7 +760,7 @@ function TranslationPane({
   const canTranslate = Boolean(source.textContent?.trim());
 
   return (
-    <section className="translation-pane" aria-label="全文译文">
+    <section className="translation-pane" aria-label="全文译文" onMouseUp={onSelection}>
       <header className="translation-header">
         <div>
           <span><Languages size={16} /> 全文翻译</span>
@@ -787,19 +802,28 @@ function TranslationPane({
               const showingOriginal = mode === "translation" && revealedOriginals.has(chunk.id);
               const location = chunk.pageIndex !== undefined ? `第 ${chunk.pageIndex + 1} 页` : `段落 ${Number(chunk.blockIndex ?? chunk.index) + 1}`;
               return (
-                <button
+                <article
                   key={chunk.id}
-                  type="button"
                   className={`translation-chunk ${showingOriginal ? "showing-original" : ""} ${chunk.translatedText ? "" : "pending"}`}
                   data-translation-index={chunk.index}
                   data-translation-page={chunk.pageIndex}
                   data-translation-block={chunk.blockIndex}
-                  onClick={() => { if (mode === "translation" && chunk.translatedText) onToggleOriginal(chunk.id); }}
+                  role={mode === "translation" && chunk.translatedText ? "button" : undefined}
+                  tabIndex={mode === "translation" && chunk.translatedText ? 0 : undefined}
+                  onClick={() => {
+                    if (mode === "translation" && chunk.translatedText && !window.getSelection()?.toString().trim()) onToggleOriginal(chunk.id);
+                  }}
+                  onKeyDown={(event) => {
+                    if (mode === "translation" && chunk.translatedText && (event.key === "Enter" || event.key === " ")) {
+                      event.preventDefault();
+                      onToggleOriginal(chunk.id);
+                    }
+                  }}
                   aria-label={mode === "translation" ? `${showingOriginal ? "显示译文" : "显示原文"}：${location}` : location}
                 >
                   <span className="translation-chunk-meta"><strong>{location}</strong><small>{mode === "translation" && chunk.translatedText ? (showingOriginal ? "原文 · 点击恢复译文" : "译文 · 点击查看原文") : "中文译文"}</small></span>
-                  <p>{showingOriginal ? chunk.sourceText : chunk.translatedText || "等待当前批次翻译…"}</p>
-                </button>
+                  <p className="translation-chunk-text">{showingOriginal ? chunk.sourceText : chunk.translatedText || "等待当前批次翻译…"}</p>
+                </article>
               );
             })}
           </div>
