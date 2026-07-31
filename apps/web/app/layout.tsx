@@ -2,7 +2,7 @@ import type { Metadata, Viewport } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: { default: "AI Native Reader", template: "%s · AI Native Reader" },
+  title: { default: "阅微 / MicroRead", template: "%s · 阅微 / MicroRead" },
   description: "以来源锚点为基础的证据优先 AI 阅读器",
   manifest: "/manifest.webmanifest",
 };

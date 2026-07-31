@@ -26,7 +26,7 @@ if (-not (Test-Path -LiteralPath (Join-Path $workspace "node_modules"))) {
 }
 
 if ($Target -eq "desktop") {
-  $desktopExe = Join-Path $workspace "apps\desktop\src-tauri\target\release\ai-native-reader-desktop.exe"
+  $desktopExe = Join-Path $workspace "apps\desktop\src-tauri\target\release\micro-read-desktop.exe"
   if ($Rebuild -or -not (Test-Path -LiteralPath $desktopExe)) {
     corepack pnpm build:desktop
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

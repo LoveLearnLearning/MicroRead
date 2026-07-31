@@ -1,6 +1,6 @@
 {
-  "name": "AI Native Reader",
-  "short_name": "Native Reader",
+  "name": "阅微 / MicroRead",
+  "short_name": "阅微",
   "description": "证据优先的 AI 原生阅读器",
   "start_url": "/library",
   "display": "standalone",

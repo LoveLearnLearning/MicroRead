@@ -511,7 +511,7 @@ async fn import_web(url: String) -> Result<ImportedWebArticle, String> {
     let client = Client::builder()
         .redirect(Policy::none())
         .timeout(Duration::from_secs(15))
-        .user_agent("AI-Native-Reader/0.1 (+local desktop reader import)")
+        .user_agent("MicroRead/0.1 (+local desktop reader import)")
         .build()
         .map_err(|_| "无法创建网页客户端。".to_string())?;
     let mut target = Url::parse(&url).map_err(|_| "请输入有效的网页地址。".to_string())?;
@@ -703,7 +703,7 @@ pub fn run() {
             import_web
         ])
         .run(tauri::generate_context!())
-        .expect("failed to run AI Native Reader desktop");
+        .expect("failed to run MicroRead desktop");
 }
 
 #[cfg(test)]

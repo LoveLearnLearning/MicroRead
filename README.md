@@ -1,4 +1,4 @@
-# AI Native Reader
+# 阅微 / MicroRead
 
 一个开源、本地优先、证据优先的 AI 原生阅读器。它把原文、稳定锚点、用户标注、AI 引用和知识卡片放进同一条阅读链路，而不是只在 PDF 旁边放一个聊天框。
 
@@ -6,6 +6,7 @@
 ![Next.js](https://img.shields.io/badge/Next.js-16-black)
 ![Tauri](https://img.shields.io/badge/Tauri-2-24c8db)
 ![tests](https://img.shields.io/badge/tests-26_unit_%2B_Web_Desktop_E2E-5f84a8)
+![license](https://img.shields.io/badge/license-Apache--2.0-blue)
 
 ## 已完成的体验
 
@@ -64,7 +65,7 @@ corepack pnpm dev
 corepack pnpm build:desktop
 ```
 
-产物位于 `apps/desktop/src-tauri/target/release/ai-native-reader-desktop.exe`。桌面版没有内置 Node/Next 服务：阅读、标注与备份保存在本地 WebView 数据库中，AI 和网页导入由轻量的 Rust Tauri Command 直接完成。
+产物位于 `apps/desktop/src-tauri/target/release/micro-read-desktop.exe`。桌面版没有内置 Node/Next 服务：阅读、标注与备份保存在本地 WebView 数据库中，AI 和网页导入由轻量的 Rust Tauri Command 直接完成。
 
 生成过一次后，可用轻量启动脚本直接打开；传入 `-Rebuild` 可强制重新构建：
 

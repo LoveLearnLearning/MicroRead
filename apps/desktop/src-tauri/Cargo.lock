@@ -18,7 +18,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "ai-native-reader-desktop"
+name = "micro-read-desktop"
 version = "0.1.0"
 dependencies = [
  "chrono",

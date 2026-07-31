@@ -1,4 +1,4 @@
-const CACHE_NAME = "ai-native-reader-v1";
+const CACHE_NAME = "micro-read-v1";
 const APP_SHELL = ["/", "/library", "/cards", "/topics", "/settings", "/manifest.webmanifest"];
 
 self.addEventListener("install", (event) => {

@@ -3,6 +3,7 @@ node_modules/
 .turbo/
 dist/
 target/
+apps/desktop/src-tauri/gen/schemas/
 coverage/
 playwright-report/
 test-results/

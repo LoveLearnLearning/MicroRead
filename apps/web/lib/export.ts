@@ -14,7 +14,7 @@ import type {
 } from "@reader/domain";
 import { db, type LocalSetting } from "@/lib/db";
 
-const BACKUP_APP_ID = "ai-native-reader";
+const BACKUP_APP_ID = "micro-read";
 const BACKUP_SCHEMA_VERSION = 3;
 const COMPATIBLE_BACKUP_VERSIONS = new Set([2, 3]);
 const MANIFEST_PATH = "manifest.json";
@@ -63,7 +63,7 @@ export function cardsToMarkdown(cards: KnowledgeCard[]): string {
     const tags = card.tags.length ? `\n\n标签：${card.tags.map((tag) => `#${tag}`).join(" ")}` : "";
     return `## ${card.title}\n\n> ${card.excerpt}\n\n来源：${card.sourceTitle}${note}${explanation}${tags}`;
   }).join("\n\n---\n\n");
-  return `# AI Native Reader 知识卡\n\n导出时间：${new Date().toLocaleString("zh-CN")}\n\n${body}\n`;
+  return `# 阅微 知识卡\n\n导出时间：${new Date().toLocaleString("zh-CN")}\n\n${body}\n`;
 }
 
 export async function createFullBackup(): Promise<Blob> {
@@ -138,12 +138,12 @@ export async function createFullBackup(): Promise<Blob> {
   archive[MANIFEST_PATH] = Uint8Array.from(new TextEncoder().encode(JSON.stringify(manifest)));
 
   const bytes = await zipArchive(archive);
-  return new Blob([toArrayBuffer(bytes)], { type: "application/vnd.ai-native-reader.backup+zip" });
+  return new Blob([toArrayBuffer(bytes)], { type: "application/vnd.micro-read.backup+zip" });
 }
 
 export async function exportFullBackup(): Promise<void> {
   const backup = await createFullBackup();
-  downloadBlob(`ai-native-reader-${dateStamp()}.anr-backup`, backup);
+  downloadBlob(`micro-read-${dateStamp()}.anr-backup`, backup);
 }
 
 export async function restoreFullBackup(file: Blob): Promise<RestoreSummary> {
@@ -204,7 +204,7 @@ export function exportCardsMarkdown(cards: KnowledgeCard[]): void {
 }
 
 function validateManifest(raw: unknown, archive: Record<string, Uint8Array>): FullBackupManifest {
-  if (!isRecord(raw) || raw.appId !== BACKUP_APP_ID) throw new Error("这不是 AI Native Reader 备份。");
+  if (!isRecord(raw) || raw.appId !== BACKUP_APP_ID) throw new Error("这不是阅微备份。");
   if (typeof raw.schemaVersion !== "number" || !COMPATIBLE_BACKUP_VERSIONS.has(raw.schemaVersion)) {
     throw new Error(`暂不支持此备份版本：${String(raw.schemaVersion)}`);
   }

@@ -1,12 +1,12 @@
 [package]
-name = "ai-native-reader-desktop"
+name = "micro-read-desktop"
 version = "0.1.0"
-description = "Lightweight local desktop shell for AI Native Reader"
-authors = ["AI Native Reader contributors"]
+description = "Lightweight local desktop shell for MicroRead"
+authors = ["MicroRead contributors"]
 edition = "2021"
 
 [lib]
-name = "ai_native_reader_desktop_lib"
+name = "micro_read_desktop_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]

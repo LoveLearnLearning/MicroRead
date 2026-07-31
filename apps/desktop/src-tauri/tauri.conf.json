@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "AI Native Reader",
+  "productName": "MicroRead",
   "version": "0.1.0",
-  "identifier": "io.github.ai-native-reader",
+  "identifier": "io.github.micro-read",
   "build": {
     "beforeDevCommand": "corepack pnpm dev",
     "devUrl": "http://127.0.0.1:1420",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "AI Native Reader",
+        "title": "阅微 / MicroRead",
         "width": 1280,
         "height": 820,
         "minWidth": 860,

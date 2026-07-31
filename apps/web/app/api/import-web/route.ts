@@ -66,7 +66,7 @@ async function fetchPublicHtml(initialUrl: URL): Promise<Response> {
       signal: AbortSignal.timeout(15_000),
       headers: {
         Accept: "text/html,application/xhtml+xml",
-        "User-Agent": "AI-Native-Reader/0.1 (+local reader import)",
+        "User-Agent": "MicroRead/0.1 (+local reader import)",
       },
     });
 

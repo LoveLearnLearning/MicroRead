@@ -1,4 +1,4 @@
-# Contributing to AI Native Reader
+# Contributing to 阅微 / MicroRead
 
 感谢你帮助改进这个开源本地阅读器。
 

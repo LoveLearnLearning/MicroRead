@@ -39,7 +39,7 @@ class ReaderDatabase extends Dexie {
   translations!: EntityTable<DocumentTranslation, "id">;
 
   constructor() {
-    super("ai-native-reader");
+    super("micro-read");
     this.version(1).stores({
       sources: "id, workspaceId, contentHash, libraryState, type, processingState, updatedAt, *tags, *topicIds",
       sourceFiles: "sourceId",
@@ -81,7 +81,7 @@ export async function ensureSeedData(): Promise<void> {
     workspaceId: DEFAULT_WORKSPACE_ID,
     type: "WEB",
     title: "为什么阅读需要证据链",
-    author: "AI Native Reader 团队",
+    author: "阅微团队",
     canonicalUri: "reader://welcome/evidence-first",
     contentHash: "seed:evidence-first:v1",
     libraryState: "LIBRARY",

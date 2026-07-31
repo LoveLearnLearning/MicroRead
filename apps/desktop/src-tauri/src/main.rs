@@ -1,3 +1,3 @@
 fn main() {
-    ai_native_reader_desktop_lib::run();
+    micro_read_desktop_lib::run();
 }
