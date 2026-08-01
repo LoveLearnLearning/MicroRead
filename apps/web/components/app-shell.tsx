@@ -10,6 +10,8 @@ import {
   Inbox,
   Library,
   Menu,
+  PanelLeftClose,
+  PanelLeftOpen,
   Search,
   Settings,
   Sparkles,
@@ -21,6 +23,11 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import { ensureSeedData } from "@/lib/db";
+import {
+  loadReaderSidebarCollapsed,
+  saveReaderSidebarCollapsed,
+  subscribeReaderSidebarCollapsed,
+} from "@/lib/reader-layout-preferences";
 import { ServiceWorkerRegistration } from "@/components/service-worker-registration";
 
 const navItems = [
@@ -54,6 +61,11 @@ export function AppShell({ children, readerMode = false }: { children: React.Rea
   const [initializationError, setInitializationError] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
   const [commandOpen, setCommandOpen] = useState(false);
+  const readerSidebarCollapsed = useSyncExternalStore(
+    subscribeReaderSidebarCollapsed,
+    loadReaderSidebarCollapsed,
+    () => false,
+  );
 
   useEffect(() => {
     document.documentElement.dataset.readerReady = "true";
@@ -67,6 +79,10 @@ export function AppShell({ children, readerMode = false }: { children: React.Rea
     });
     return () => { cancelled = true; };
   }, []);
+
+  function changeReaderSidebar(collapsed: boolean) {
+    saveReaderSidebarCollapsed(collapsed);
+  }
 
   const handleKeyDown = useCallback((event: KeyboardEvent) => {
     if ((event.ctrlKey || event.metaKey) && event.key.toLocaleLowerCase() === "k") {
@@ -93,7 +109,7 @@ export function AppShell({ children, readerMode = false }: { children: React.Rea
   }
 
   return (
-    <div className={`app-frame ${readerMode ? "app-frame-reader" : ""}`}>
+    <div className={`app-frame ${readerMode ? "app-frame-reader" : ""} ${readerMode && readerSidebarCollapsed ? "app-sidebar-collapsed" : ""}`}>
       <ServiceWorkerRegistration />
       <button className="mobile-menu-button" aria-label="打开导航" onClick={() => setMobileOpen(true)}>
         <Menu size={20} />
@@ -108,9 +124,16 @@ export function AppShell({ children, readerMode = false }: { children: React.Rea
               <small>循迹而读</small>
             </span>
           </Link>
-          <button className="icon-button sidebar-close" aria-label="关闭导航" onClick={() => setMobileOpen(false)}>
-            <X size={18} />
-          </button>
+          <span className="sidebar-top-actions">
+            {readerMode && (
+              <button className="icon-button reader-main-sidebar-close" aria-label="收起主导航" title="收起主导航" onClick={() => changeReaderSidebar(true)}>
+                <PanelLeftClose size={18} />
+              </button>
+            )}
+            <button className="icon-button sidebar-close" aria-label="关闭导航" onClick={() => setMobileOpen(false)}>
+              <X size={18} />
+            </button>
+          </span>
         </div>
 
         <div className="workspace-switcher static-workspace">
@@ -174,6 +197,12 @@ export function AppShell({ children, readerMode = false }: { children: React.Rea
           </div>
         </div>
       </aside>
+
+      {readerMode && readerSidebarCollapsed && (
+        <button className="reader-main-sidebar-restore" aria-label="展开主导航" title="展开主导航" onClick={() => changeReaderSidebar(false)}>
+          <PanelLeftOpen size={18} />
+        </button>
+      )}
 
       <main className="app-content">{children}</main>
 
