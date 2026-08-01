@@ -20,7 +20,7 @@ export interface StreamHandlers {
 }
 
 export async function requestAiResponse(
-  request: { sourceId: string; mode: AiMode; query: string; passages: Passage[] },
+  request: { sourceId: string; mode: AiMode; query: string; passages: Passage[]; parentContext?: { query: string; answerMarkdown: string } },
   handlers: StreamHandlers = {},
 ): Promise<StreamedAiResult> {
   const platformResult = await platformRequestAi({ ...request, locale: "zh-CN" });

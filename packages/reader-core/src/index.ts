@@ -1,4 +1,4 @@
-import type { Anchor, Passage, Source, TextQuote, TranslationChunk } from "@reader/domain";
+import type { Anchor, Passage, PdfRect, Source, TextQuote, TranslationChunk } from "@reader/domain";
 import { createId, nowIso } from "@reader/domain";
 
 const MAX_PASSAGE_LENGTH = 1_200;
@@ -14,6 +14,7 @@ export interface SelectionSnapshot {
   blockIndex?: number;
   startOffset?: number;
   endOffset?: number;
+  pdfRects?: PdfRect[];
 }
 
 export function createTextQuote(exact: string, context: string, startOffset?: number): TextQuote {
@@ -38,6 +39,7 @@ export function createAnchor(snapshot: SelectionSnapshot): Anchor {
     startOffset: snapshot.startOffset,
     endOffset: snapshot.endOffset,
     quote: createTextQuote(snapshot.exact, snapshot.context, snapshot.startOffset),
+    pdfRects: snapshot.pdfRects,
     createdAt: nowIso(),
   };
 }
@@ -93,6 +95,18 @@ export function createPassages(source: Source): Passage[] {
 }
 
 export function createTranslationChunks(source: Source): TranslationChunk[] {
+  if (source.type === "PDF") {
+    if (!source.pdfTextBlocks?.length) return [];
+    return source.pdfTextBlocks.map((block, index) => ({
+      id: `${source.id}:translation:${index}`,
+      index,
+      sourceText: block.text,
+      translatedText: "",
+      pageIndex: block.pageIndex,
+      blockIndex: index,
+      pdfRect: block.rect,
+    }));
+  }
   const blocks = (source.textContent ?? "")
     .split(/\n{2,}/)
     .map(normalizeWhitespace)
@@ -107,7 +121,6 @@ export function createTranslationChunks(source: Source): TranslationChunk[] {
         index,
         sourceText,
         translatedText: "",
-        pageIndex: source.type === "PDF" ? blockIndex : undefined,
         blockIndex,
       });
     }

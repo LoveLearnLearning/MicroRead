@@ -2,7 +2,7 @@ import { getVersion } from "@tauri-apps/api/app";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { check, type Update } from "@tauri-apps/plugin-updater";
-import type { AiMode, Passage } from "@reader/domain";
+import type { AiMode, Passage, WebResearchResult } from "@reader/domain";
 import type { ImportedWebArticle } from "@/lib/db";
 import type {
   AiSettings,
@@ -31,10 +31,18 @@ function asError(reason: unknown): Error {
 }
 
 export async function platformRequestAi(
-  request: { sourceId: string; mode: AiMode; query: string; passages: Passage[]; locale: string },
+  request: { sourceId: string; mode: AiMode; query: string; passages: Passage[]; locale: string; parentContext?: { query: string; answerMarkdown: string } },
 ): Promise<PlatformAiResult> {
   try {
     return await invoke<PlatformAiResult>("request_ai", { request });
+  } catch (reason) {
+    throw asError(reason);
+  }
+}
+
+export async function platformResearchWeb(query: string): Promise<WebResearchResult[]> {
+  try {
+    return await invoke<WebResearchResult[]>("research_web", { query });
   } catch (reason) {
     throw asError(reason);
   }

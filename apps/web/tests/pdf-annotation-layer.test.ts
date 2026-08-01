@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Anchor } from "@reader/domain";
-import { buildNormalizedTextMap, locateAnchorRange } from "@/lib/pdf-annotation-layer";
+import { buildNormalizedTextMap, locateAnchorRange, locateTextRange, normalizeClientRects } from "@/lib/pdf-annotation-layer";
 
 function anchor(exact: string, startOffset?: number): Anchor {
   return {
@@ -32,5 +32,20 @@ describe("PDF annotation text mapping", () => {
     const range = locateAnchorRange(root, anchor("Reading", 15));
 
     expect(range?.toString()).toBe("Reading");
+  });
+
+  it("locates a translation chunk without creating an annotation anchor", () => {
+    const root = document.createElement("div");
+    root.innerHTML = "<span>One translated</span><span>fragment stays selectable.</span>";
+
+    expect(locateTextRange(root, "translated fragment", 0, "", "", true)?.toString()).toBe("translatedfragment");
+  });
+
+  it("normalizes selected PDF line rectangles against the page", () => {
+    const rects = normalizeClientRects(
+      [{ left: 120, top: 220, right: 320, bottom: 240, width: 200, height: 20 }],
+      { left: 100, top: 200, right: 700, bottom: 1000, width: 600, height: 800 },
+    );
+    expect(rects[0]).toEqual({ left: 1 / 30, top: 0.025, width: 1 / 3, height: 0.025 });
   });
 });

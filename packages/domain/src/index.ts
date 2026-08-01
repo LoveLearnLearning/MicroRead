@@ -7,6 +7,19 @@ export type ProcessingState =
   | "INDEXING"
   | "FAILED";
 
+export interface PdfRect {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+}
+
+export interface PdfTextBlock {
+  pageIndex: number;
+  text: string;
+  rect: PdfRect;
+}
+
 export interface Workspace {
   id: string;
   name: string;
@@ -35,6 +48,7 @@ export interface Source {
   byteSize: number;
   pageCount?: number;
   textContent?: string;
+  pdfTextBlocks?: PdfTextBlock[];
   summary?: string;
   tags: string[];
   topicIds: string[];
@@ -64,6 +78,7 @@ export interface Anchor {
   startOffset?: number;
   endOffset?: number;
   quote: TextQuote;
+  pdfRects?: PdfRect[];
   createdAt: string;
 }
 
@@ -121,6 +136,8 @@ export interface Passage {
   pageIndex?: number;
   blockIndex?: number;
   heading?: string;
+  url?: string;
+  provider?: string;
 }
 
 export type ClaimType =
@@ -138,6 +155,18 @@ export interface Citation {
   quote: string;
   pageIndex?: number;
   blockIndex?: number;
+  url?: string;
+  provider?: string;
+}
+
+export type AiBranchType = "ROOT" | "DEEPER" | "DIVERGENT" | "RETRY";
+
+export interface WebResearchResult {
+  id: string;
+  title: string;
+  url: string;
+  snippet: string;
+  provider: "Wikipedia" | "Crossref";
 }
 
 export interface Claim {
@@ -164,6 +193,10 @@ export interface AiResponse {
   limitations: string[];
   usage: Usage;
   createdAt: string;
+  parentResponseId?: string;
+  branchType?: AiBranchType;
+  anchorId?: string;
+  webSources?: WebResearchResult[];
 }
 
 export type AiMode = "SELECTION_EXPLAIN" | "DOCUMENT_QA" | "SECTION_OVERVIEW" | "TERM_EXPLAIN";
@@ -175,6 +208,7 @@ export interface TranslationChunk {
   translatedText: string;
   pageIndex?: number;
   blockIndex?: number;
+  pdfRect?: PdfRect;
 }
 
 export interface DocumentTranslation {
@@ -193,6 +227,7 @@ export interface DocumentTranslation {
   error?: string;
   createdAt: string;
   updatedAt: string;
+  layoutVersion?: number;
 }
 
 export interface UsageEntry {
