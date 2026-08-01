@@ -25,7 +25,7 @@
 | FR-INGEST-002 | 公开网页 URL 导入；Readability 正文提取；私网/本机地址与非 HTML 拒绝 | URL 安全单元测试 |
 | FR-LIB-001/003/005 | 网格/列表、类型筛选、搜索、标签、专题、归档、回收站、恢复与永久删除 | 浏览器交互 |
 | FR-READ-001/002/004/005/006 | PDF.js 连续阅读、网页净化阅读、缩放、全文搜索、选区 Anchor、阅读现场 | 浏览器 E2E |
-| FR-NOTE-001/002/003 | 高亮、批注、书签、颜色模型、原文回跳、知识卡 | 浏览器 E2E + IndexedDB |
+| FR-NOTE-001/002/003 | PDF/网页高亮与批注可视化、批注编辑、标注软删除、书签、颜色模型、原文回跳、知识卡 | 浏览器 E2E + IndexedDB |
 | FR-AI-001/002/003/004 | 选区解释、文档问答、阅读地图、术语/语境解释 | Web API Route + Desktop Rust Command |
 | 全文翻译 | 英文文献分段渐进翻译；双栏同步滚动；译文模式点击段落切换原文；暂停续传与本地缓存 | Web/Desktop E2E + DeepSeek 原生冒烟测试 |
 | Desktop 自动更新 | 启动静默检查、设置页手动检查、可选自动安装；GitHub Release 元数据与 minisign 验签 | 发布契约测试 + 签名 NSIS 构建 |
@@ -42,7 +42,7 @@
 - 原始 `Source`、`Anchor`、`Annotation`、`KnowledgeCard`、`Citation` 分离存储。
 - Anchor 保存 exact/prefix/suffix、页码或段落索引、字符偏移。
 - 回跳先匹配 exact，失败后用 prefix/suffix 包围范围重定位。
-- PDF 页面和文本分层渲染，页面进入附近视口时才加载。
+- PDF 页面和文本分层渲染，页面进入附近视口时才加载；已保存锚点会跨文本 span 重定位并绘制高亮与笔记标记。
 
 ### 3.2 AI 证据边界
 
@@ -83,6 +83,6 @@ cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml
 corepack pnpm build
 ```
 
-当前自动化覆盖：37 个 Web/协议/安全测试、3 个 Desktop 发布契约测试、12 个默认 Rust 测试、2 个显式 DeepSeek 原生冒烟测试、3 条 Web Chromium 端到端流程和 1 条 Desktop 静态壳端到端流程。
+当前自动化覆盖：40 个 Web/协议/安全测试、3 个 Desktop 发布契约测试、12 个默认 Rust 测试、2 个显式 DeepSeek 原生冒烟测试、4 条 Web Chromium 端到端流程和 1 条 Desktop 静态壳端到端流程。
 
-Windows 验收机基线：加入全文翻译后的 release EXE 13.34 MiB；首次启动到可响应窗口约 500 ms，随后两次约 105–108 ms。Web E2E 覆盖完整阅读/高亮恢复、PDF 渐进导入，以及全文翻译的双向同步、原文切换和缓存恢复。
+Windows 验收机基线：加入全文翻译后的 release EXE 13.34 MiB；首次启动到可响应窗口约 500 ms，随后两次约 105–108 ms。Web E2E 覆盖完整阅读/高亮恢复、批注编辑删除、PDF 渐进导入与页面标注恢复，以及全文翻译的双向同步、原文切换和缓存恢复。
