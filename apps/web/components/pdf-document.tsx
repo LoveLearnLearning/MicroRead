@@ -1,24 +1,56 @@
 "use client";
 
-import { AlertTriangle, LoaderCircle, RotateCcw } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { AlertTriangle, LoaderCircle, RotateCcw, StickyNote } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Document, Page, pdfjs } from "react-pdf";
 import type { PDFDocumentProxy, TextItem } from "pdfjs-dist/types/src/display/api";
 import "react-pdf/dist/Page/TextLayer.css";
 import "react-pdf/dist/Page/AnnotationLayer.css";
-import type { Source } from "@reader/domain";
+import type { Anchor, Annotation, Source } from "@reader/domain";
 import { updateSource } from "@/lib/db";
+import { locateAnchorRange } from "@/lib/pdf-annotation-layer";
 
 pdfjs.GlobalWorkerOptions.workerSrc = new URL(
   "pdfjs-dist/build/pdf.worker.min.mjs",
   import.meta.url,
 ).toString();
 
-export function PdfDocument({ source, blob, zoom }: { source: Source; blob?: Blob; zoom: number }) {
+interface PageAnnotation {
+  annotation: Annotation;
+  anchor: Anchor;
+}
+
+const EMPTY_PAGE_ANNOTATIONS: PageAnnotation[] = [];
+
+export function PdfDocument({
+  source,
+  blob,
+  zoom,
+  annotations,
+  anchors,
+}: {
+  source: Source;
+  blob?: Blob;
+  zoom: number;
+  annotations: Annotation[];
+  anchors: Anchor[];
+}) {
   const [pageCount, setPageCount] = useState(source.pageCount ?? 0);
   const [error, setError] = useState("");
   const extractingRef = useRef(false);
   const cancelledRef = useRef(false);
+  const annotationsByPage = useMemo(() => {
+    const anchorMap = new Map(anchors.map((anchor) => [anchor.id, anchor]));
+    const pages = new Map<number, PageAnnotation[]>();
+    for (const annotation of annotations) {
+      const anchor = anchorMap.get(annotation.anchorId);
+      if (annotation.deletedAt || anchor?.pageIndex === undefined || !["HIGHLIGHT", "UNDERLINE", "NOTE"].includes(annotation.type)) continue;
+      const pageAnnotations = pages.get(anchor.pageIndex) ?? [];
+      pageAnnotations.push({ annotation, anchor });
+      pages.set(anchor.pageIndex, pageAnnotations);
+    }
+    return pages;
+  }, [anchors, annotations]);
 
   useEffect(() => {
     // React Strict Mode mounts, cleans up, then mounts again in development.
@@ -95,16 +127,46 @@ export function PdfDocument({ source, blob, zoom }: { source: Source; blob?: Blo
         </div>
       ) : (
         Array.from({ length: pageCount }, (_, index) => (
-          <LazyPdfPage key={index} pageNumber={index + 1} zoom={zoom} />
+          <LazyPdfPage key={index} pageNumber={index + 1} zoom={zoom} annotations={annotationsByPage.get(index) ?? EMPTY_PAGE_ANNOTATIONS} />
         ))
       )}
     </Document>
   );
 }
 
-function LazyPdfPage({ pageNumber, zoom }: { pageNumber: number; zoom: number }) {
+interface PositionedAnnotation {
+  annotation: Annotation;
+  rects: Array<{ left: number; top: number; width: number; height: number }>;
+}
+
+function positionsMatch(left: PositionedAnnotation[], right: PositionedAnnotation[]): boolean {
+  return left.length === right.length && left.every((item, itemIndex) => {
+    const candidate = right[itemIndex];
+    return candidate?.annotation.id === item.annotation.id
+      && item.rects.length === candidate.rects.length
+      && item.rects.every((rect, rectIndex) => {
+        const compared = candidate.rects[rectIndex];
+        return compared !== undefined
+          && Math.abs(rect.left - compared.left) < .1
+          && Math.abs(rect.top - compared.top) < .1
+          && Math.abs(rect.width - compared.width) < .1
+          && Math.abs(rect.height - compared.height) < .1;
+      });
+  });
+}
+
+function LazyPdfPage({
+  pageNumber,
+  zoom,
+  annotations,
+}: {
+  pageNumber: number;
+  zoom: number;
+  annotations: PageAnnotation[];
+}) {
   const wrapperRef = useRef<HTMLDivElement>(null);
   const [visible, setVisible] = useState(pageNumber <= 2);
+  const [positionedAnnotations, setPositionedAnnotations] = useState<PositionedAnnotation[]>([]);
 
   useEffect(() => {
     const node = wrapperRef.current;
@@ -122,6 +184,33 @@ function LazyPdfPage({ pageNumber, zoom }: { pageNumber: number; zoom: number })
     return () => observer.disconnect();
   }, [visible]);
 
+  const measureAnnotations = useCallback(() => {
+    const wrapper = wrapperRef.current;
+    const textLayer = wrapper?.querySelector<HTMLElement>(".textLayer");
+    if (!wrapper || !textLayer) return;
+    const wrapperBounds = wrapper.getBoundingClientRect();
+    const positioned = annotations.flatMap(({ annotation, anchor }) => {
+      const range = locateAnchorRange(textLayer, anchor);
+      if (!range) return [];
+      const rects = Array.from(range.getClientRects())
+        .filter((rect) => rect.width > 0 && rect.height > 0)
+        .map((rect) => ({
+          left: rect.left - wrapperBounds.left,
+          top: rect.top - wrapperBounds.top,
+          width: rect.width,
+          height: rect.height,
+        }));
+      return rects.length ? [{ annotation, rects }] : [];
+    });
+    setPositionedAnnotations((current) => positionsMatch(current, positioned) ? current : positioned);
+  }, [annotations]);
+
+  useEffect(() => {
+    if (!visible) return;
+    const frame = window.requestAnimationFrame(measureAnnotations);
+    return () => window.cancelAnimationFrame(frame);
+  }, [measureAnnotations, visible, zoom]);
+
   return (
     <div
       ref={wrapperRef}
@@ -136,10 +225,34 @@ function LazyPdfPage({ pageNumber, zoom }: { pageNumber: number; zoom: number })
           width={760 * zoom}
           renderAnnotationLayer
           renderTextLayer
+          onRenderTextLayerSuccess={measureAnnotations}
           loading={<div className="pdf-page-placeholder"><LoaderCircle className="spin" size={18} /><span>第 {pageNumber} 页</span></div>}
         />
       ) : (
         <div className="pdf-page-placeholder"><span>{pageNumber}</span></div>
+      )}
+      {!!positionedAnnotations.length && (
+        <div className="pdf-annotation-overlay" aria-hidden="true">
+          {positionedAnnotations.flatMap(({ annotation, rects }) => [
+            ...rects.map((rect, index) => (
+              <span
+                key={`${annotation.id}:rect:${index}`}
+                className={`pdf-annotation-highlight pdf-annotation-${annotation.type.toLocaleLowerCase()} ${annotation.color}`}
+                style={rect}
+              />
+            )),
+            annotation.type === "NOTE" && rects[0] ? (
+              <span
+                key={`${annotation.id}:note`}
+                className={`pdf-annotation-note-marker ${annotation.color}`}
+                style={{ left: Math.min(rects[0].left + rects[0].width + 4, 760 * zoom - 18), top: rects[0].top - 2 }}
+                title={annotation.bodyMarkdown}
+              >
+                <StickyNote size={10} />
+              </span>
+            ) : null,
+          ])}
+        </div>
       )}
       <span className="pdf-page-number">{pageNumber}</span>
     </div>

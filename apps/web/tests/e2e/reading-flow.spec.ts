@@ -1,5 +1,20 @@
 import { expect, test } from "@playwright/test";
 
+async function selectLeadingText(locator: import("@playwright/test").Locator, length = 18) {
+  await locator.evaluate((node, selectionLength) => {
+    const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT);
+    const textNode = walker.nextNode();
+    if (!textNode) throw new Error("missing text node");
+    const range = document.createRange();
+    range.setStart(textNode, 0);
+    range.setEnd(textNode, Math.min(selectionLength, textNode.textContent?.length || 0));
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    node.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+  }, length);
+}
+
 test("local workspace opens directly and highlight persists", async ({ page }) => {
   await page.goto("/library");
   await expect(page.locator("html[data-reader-ready='true']")).toBeAttached();
@@ -28,6 +43,27 @@ test("local workspace opens directly and highlight persists", async ({ page }) =
   await expect(page.locator("mark.annotation-mark")).toHaveCount(1);
 });
 
+test("annotations can be edited and deleted from the notes panel", async ({ page }) => {
+  await page.goto("/library");
+  await page.getByRole("link", { name: /为什么阅读需要证据链/ }).click();
+
+  await selectLeadingText(page.locator("[data-block-index='1']"));
+  await page.locator(".selection-toolbar").getByRole("button", { name: /笔记/ }).click();
+  await page.getByPlaceholder("写下你的理解、疑问或连接…").fill("初始批注");
+  await page.getByRole("button", { name: "保存", exact: true }).click();
+  await expect(page.getByText("初始批注", { exact: true })).toBeVisible();
+
+  await page.getByRole("button", { name: "编辑批注" }).click();
+  await page.getByRole("textbox", { name: "编辑批注内容" }).fill("修改后的批注");
+  await page.getByRole("button", { name: "保存修改" }).click();
+  await expect(page.getByText("修改后的批注", { exact: true })).toBeVisible();
+
+  await page.getByRole("button", { name: "删除批注" }).click();
+  await page.getByRole("button", { name: "确认删除" }).click();
+  await expect(page.getByText("修改后的批注", { exact: true })).toHaveCount(0);
+  await expect(page.locator("mark.annotation-mark")).toHaveCount(0);
+});
+
 test("PDF import opens progressively and extracts searchable text", async ({ page, context }) => {
   const fixturePage = await context.newPage();
   await fixturePage.setContent("<main><h1>Evidence First Reading</h1><p>A citation should always lead back to its source.</p></main>");
@@ -45,15 +81,31 @@ test("PDF import opens progressively and extracts searchable text", async ({ pag
 
   const titleText = page.locator("#pdf-page-0 .textLayer span").filter({ hasText: "Evidence First Reading" });
   await expect(titleText).toBeVisible();
-  const titleBounds = await titleText.boundingBox();
-  expect(titleBounds).not.toBeNull();
-  await page.mouse.move(titleBounds!.x + 2, titleBounds!.y + titleBounds!.height / 2);
-  await page.mouse.down();
-  await page.mouse.move(titleBounds!.x + titleBounds!.width - 2, titleBounds!.y + titleBounds!.height / 2, { steps: 12 });
-  await page.mouse.up();
+  await selectLeadingText(titleText, "Evidence First Reading".length);
 
   await expect.poll(() => page.evaluate(() => window.getSelection()?.toString().trim() ?? "")).toContain("Evidence First Reading");
   await expect(page.locator(".selection-toolbar").getByRole("button", { name: /解释/ })).toBeVisible();
+  await page.locator(".selection-toolbar").getByRole("button", { name: /高亮/ }).click();
+  await expect(page.locator("#pdf-page-0 .pdf-annotation-highlight")).toHaveCount(1);
+
+  const bodyText = page.locator("#pdf-page-0 .textLayer span").filter({ hasText: "A citation should always lead back" });
+  await selectLeadingText(bodyText, 30);
+  await page.locator(".selection-toolbar").getByRole("button", { name: /笔记/ }).click();
+  await page.getByPlaceholder("写下你的理解、疑问或连接…").fill("PDF 页面笔记");
+  await page.getByRole("button", { name: "保存", exact: true }).click();
+  await expect(page.locator("#pdf-page-0 .pdf-annotation-note-marker")).toHaveCount(1);
+
+  await page.reload();
+  await expect(page.locator("#pdf-page-0")).toBeVisible({ timeout: 20_000 });
+  await expect(page.locator("#pdf-page-0 .pdf-annotation-highlight")).toHaveCount(2);
+  await expect(page.locator("#pdf-page-0 .pdf-annotation-note-marker")).toHaveCount(1);
+
+  await page.getByRole("button", { name: /笔记/ }).click();
+  const pdfNote = page.locator(".annotation-list-item").filter({ hasText: "PDF 页面笔记" });
+  await pdfNote.getByRole("button", { name: "删除批注" }).click();
+  await pdfNote.getByRole("button", { name: "确认删除" }).click();
+  await expect(page.locator("#pdf-page-0 .pdf-annotation-note-marker")).toHaveCount(0);
+  await expect(page.locator("#pdf-page-0 .pdf-annotation-highlight")).toHaveCount(1);
 });
 
 test("full translation supports parallel reading, translation-only reveal, and local cache", async ({ page }) => {

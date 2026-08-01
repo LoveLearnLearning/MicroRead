@@ -25,6 +25,7 @@ import {
   PanelLeftOpen,
   PanelRightClose,
   PanelRightOpen,
+  Pencil,
   Plus,
   Quote,
   RefreshCw,
@@ -33,6 +34,7 @@ import {
   Send,
   Sparkles,
   StickyNote,
+  Trash2,
   Columns2,
   Pause,
   X,
@@ -61,7 +63,7 @@ import type {
 import { DEFAULT_WORKSPACE_ID, createId, nowIso } from "@reader/domain";
 import { createAnchor, createPassages, createTranslationChunks, retrievePassages } from "@reader/reader-core";
 import { requestAiResponse } from "@/lib/ai-client";
-import { db, putAnnotation, putCard, updateSource } from "@/lib/db";
+import { db, deleteAnnotation, putAnnotation, putCard, updateAnnotation, updateSource } from "@/lib/db";
 import { requestTranslationBatch } from "@/lib/translation-client";
 import { clampText, formatFileSize, formatRelativeTime } from "@/lib/format";
 import { WebDocument } from "@/components/web-document";
@@ -96,7 +98,11 @@ interface DraftAnswer {
 export function ReaderWorkspace({ sourceId }: { sourceId: string }) {
   const source = useLiveQuery(async () => (await db.sources.get(sourceId)) ?? null, [sourceId]);
   const sourceFile = useLiveQuery(() => db.sourceFiles.get(sourceId), [sourceId]);
-  const annotations = useLiveQuery(() => db.annotations.where("sourceId").equals(sourceId).toArray(), [sourceId], []);
+  const annotations = useLiveQuery(
+    async () => (await db.annotations.where("sourceId").equals(sourceId).toArray()).filter((annotation) => !annotation.deletedAt),
+    [sourceId],
+    [],
+  );
   const anchors = useLiveQuery(() => db.anchors.where("sourceId").equals(sourceId).toArray(), [sourceId], []);
   const cards = useLiveQuery(() => db.cards.where("sourceId").equals(sourceId).reverse().sortBy("updatedAt"), [sourceId], []);
   const storedResponses = useLiveQuery(() => db.aiResponses.where("sourceId").equals(sourceId).reverse().sortBy("createdAt"), [sourceId], []);
@@ -277,6 +283,15 @@ export function ReaderWorkspace({ sourceId }: { sourceId: string }) {
     });
     setNoteAnchor(null);
     setNoteDraft("");
+  }
+
+  async function editAnnotation(annotationId: string, bodyMarkdown: string) {
+    if (!bodyMarkdown.trim()) return;
+    await updateAnnotation(annotationId, { bodyMarkdown: bodyMarkdown.trim() });
+  }
+
+  async function removeAnnotation(annotationId: string) {
+    await deleteAnnotation(annotationId);
   }
 
   async function saveBookmark() {
@@ -650,7 +665,7 @@ export function ReaderWorkspace({ sourceId }: { sourceId: string }) {
           {source.type === "PDF" ? (
             sourceFile === undefined
               ? <div className="document-loading"><LoaderCircle className="spin" size={22} /><span>正在读取本地原件…</span></div>
-              : <PdfDocument source={source} blob={sourceFile?.blob} zoom={zoom} />
+              : <PdfDocument source={source} blob={sourceFile?.blob} zoom={zoom} annotations={annotations} anchors={anchors} />
           ) : (
             <div style={{ fontSize: `${zoom}em` }}><WebDocument source={source} annotations={annotations} anchors={anchors} /></div>
           )}
@@ -707,6 +722,8 @@ export function ReaderWorkspace({ sourceId }: { sourceId: string }) {
               onSaveNote={saveNote}
               onCancelNote={() => setNoteAnchor(null)}
               onNavigate={navigateToLocation}
+              onEditAnnotation={editAnnotation}
+              onDeleteAnnotation={removeAnnotation}
             />
           )}
           {rightTab === "info" && <InfoPanel source={source} annotationCount={annotations.length} cardCount={cards.length} />}
@@ -967,7 +984,7 @@ function AiPanel({
   );
 }
 
-function NotesPanel({ annotations, anchors, cards, noteAnchor, noteDraft, onNoteChange, onSaveNote, onCancelNote, onNavigate }: {
+function NotesPanel({ annotations, anchors, cards, noteAnchor, noteDraft, onNoteChange, onSaveNote, onCancelNote, onNavigate, onEditAnnotation, onDeleteAnnotation }: {
   annotations: Annotation[];
   anchors: Anchor[];
   cards: KnowledgeCard[];
@@ -977,8 +994,31 @@ function NotesPanel({ annotations, anchors, cards, noteAnchor, noteDraft, onNote
   onSaveNote: (event: FormEvent) => void;
   onCancelNote: () => void;
   onNavigate: (location: { pageIndex?: number; blockIndex?: number }) => void;
+  onEditAnnotation: (annotationId: string, bodyMarkdown: string) => Promise<void>;
+  onDeleteAnnotation: (annotationId: string) => Promise<void>;
 }) {
   const anchorMap = new Map(anchors.map((anchor) => [anchor.id, anchor]));
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editDraft, setEditDraft] = useState("");
+  const [deletePendingId, setDeletePendingId] = useState<string | null>(null);
+
+  async function saveEdit(event: FormEvent) {
+    event.preventDefault();
+    if (!editingId || !editDraft.trim()) return;
+    await onEditAnnotation(editingId, editDraft);
+    setEditingId(null);
+    setEditDraft("");
+  }
+
+  async function confirmDelete(annotationId: string) {
+    await onDeleteAnnotation(annotationId);
+    if (editingId === annotationId) {
+      setEditingId(null);
+      setEditDraft("");
+    }
+    setDeletePendingId(null);
+  }
+
   return (
     <div className="notes-panel-content">
       {noteAnchor && (
@@ -998,10 +1038,45 @@ function NotesPanel({ annotations, anchors, cards, noteAnchor, noteDraft, onNote
             const anchor = anchorMap.get(annotation.anchorId);
             if (!anchor) return null;
             return (
-              <button key={annotation.id} onClick={() => onNavigate(anchor)}>
-                <span className={`annotation-stripe ${annotation.color}`} />
-                <span><small>{annotation.type === "NOTE" ? "批注" : annotation.type === "BOOKMARK" ? "书签" : "高亮"} · {formatRelativeTime(annotation.updatedAt)}</small><strong>{clampText(anchor.quote.exact, 92)}</strong>{annotation.bodyMarkdown && <p>{clampText(annotation.bodyMarkdown, 100)}</p>}</span>
-              </button>
+              <article className="annotation-list-item" key={annotation.id} data-annotation-id={annotation.id}>
+                <button className="annotation-entry" onClick={() => onNavigate(anchor)}>
+                  <span className={`annotation-stripe ${annotation.color}`} />
+                  <span><small>{annotation.type === "NOTE" ? "批注" : annotation.type === "BOOKMARK" ? "书签" : "高亮"} · {formatRelativeTime(annotation.updatedAt)}</small><strong>{clampText(anchor.quote.exact, 92)}</strong>{annotation.bodyMarkdown && <p>{clampText(annotation.bodyMarkdown, 100)}</p>}</span>
+                </button>
+                <div className="annotation-item-actions">
+                  {annotation.type === "NOTE" && (
+                    <button
+                      type="button"
+                      aria-label="编辑批注"
+                      title="编辑批注"
+                      onClick={() => { setEditingId(annotation.id); setEditDraft(annotation.bodyMarkdown); setDeletePendingId(null); }}
+                    >
+                      <Pencil size={12} />
+                    </button>
+                  )}
+                  <button type="button" aria-label="删除批注" title="删除批注" onClick={() => { setDeletePendingId(annotation.id); setEditingId(null); }}>
+                    <Trash2 size={12} />
+                  </button>
+                </div>
+                {editingId === annotation.id && (
+                  <form className="annotation-inline-editor" onSubmit={(event) => void saveEdit(event)}>
+                    <textarea aria-label="编辑批注内容" autoFocus value={editDraft} onChange={(event) => setEditDraft(event.target.value)} />
+                    <div>
+                      <button type="button" className="ghost-button" onClick={() => setEditingId(null)}>取消</button>
+                      <button className="primary-button" disabled={!editDraft.trim()}><Save size={12} /> 保存修改</button>
+                    </div>
+                  </form>
+                )}
+                {deletePendingId === annotation.id && (
+                  <div className="annotation-delete-confirm" role="alert">
+                    <span>删除后将从原文中移除此标记。</span>
+                    <div>
+                      <button type="button" className="ghost-button" onClick={() => setDeletePendingId(null)}>取消</button>
+                      <button type="button" className="danger-button" onClick={() => void confirmDelete(annotation.id)}>确认删除</button>
+                    </div>
+                  </div>
+                )}
+              </article>
             );
           })}
         </div>

@@ -212,6 +212,30 @@ export async function putAnnotation(anchor: Anchor, annotation: Annotation): Pro
   });
 }
 
+export async function updateAnnotation(
+  id: string,
+  changes: Partial<Pick<Annotation, "bodyMarkdown" | "color" | "tags" | "deletedAt">>,
+): Promise<void> {
+  await db.transaction("rw", db.annotations, db.syncOperations, async () => {
+    const annotation = await db.annotations.get(id);
+    if (!annotation) return;
+    const updated: Annotation = {
+      ...annotation,
+      ...changes,
+      version: annotation.version + 1,
+      updatedAt: nowIso(),
+    };
+    await db.annotations.put(updated);
+    await db.syncOperations.add(
+      createOperation("annotation", updated.id, updated as unknown as Record<string, unknown>),
+    );
+  });
+}
+
+export async function deleteAnnotation(id: string): Promise<void> {
+  await updateAnnotation(id, { deletedAt: nowIso() });
+}
+
 export async function putCard(card: KnowledgeCard): Promise<void> {
   await db.transaction("rw", db.cards, db.syncOperations, async () => {
     await db.cards.put(card);
