@@ -53,13 +53,19 @@ describe("reader core", () => {
   });
 
   it("creates non-overlapping translation chunks with source locations", () => {
-    const longPage = `${"Academic evidence should remain traceable. ".repeat(70)}Final sentence.`;
-    const chunks = createTranslationChunks({ ...source, type: "PDF", textContent: `${longPage}\n\nSecond page.` });
-    expect(chunks.length).toBeGreaterThan(2);
+    const firstBlock = "Academic evidence should remain traceable.";
+    const chunks = createTranslationChunks({
+      ...source,
+      type: "PDF",
+      textContent: `${firstBlock}\n\nSecond page.`,
+      pdfTextBlocks: [
+        { pageIndex: 0, text: firstBlock, rect: { left: .1, top: .2, width: .35, height: .08 } },
+        { pageIndex: 1, text: "Second page.", rect: { left: .1, top: .2, width: .3, height: .04 } },
+      ],
+    });
+    expect(chunks).toHaveLength(2);
     expect(chunks[0]?.pageIndex).toBe(0);
     expect(chunks.at(-1)?.pageIndex).toBe(1);
-    expect(chunks.filter((chunk) => chunk.pageIndex === 0).map((chunk) => chunk.sourceText).join(" ").replace(/\s+/g, " ").trim())
-      .toBe(longPage.replace(/\s+/g, " ").trim());
-    expect(chunks.every((chunk) => chunk.sourceText.length <= 1_800)).toBe(true);
+    expect(chunks[0]?.pdfRect).toEqual({ left: .1, top: .2, width: .35, height: .08 });
   });
 });

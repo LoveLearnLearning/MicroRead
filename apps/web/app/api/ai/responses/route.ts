@@ -43,7 +43,7 @@ export async function POST(request: NextRequest) {
         model,
         messages: [
           { role: "system", content: systemPrompt(parsed.data.locale) },
-          { role: "user", content: buildUserPrompt(parsed.data.query, parsed.data.mode, parsed.data.passages) },
+          { role: "user", content: buildUserPrompt(parsed.data.query, parsed.data.mode, parsed.data.passages, parsed.data.parentContext) },
         ],
         response_format: { type: "json_object" },
         thinking: { type: "disabled" },
@@ -132,14 +132,19 @@ function systemPrompt(locale: string): string {
 answerMarkdown 应简洁、易读，不要在正文中伪造引用编号。`;
 }
 
-function buildUserPrompt(query: string, mode: string, passages: Passage[]): string {
+function buildUserPrompt(query: string, mode: string, passages: Passage[], parentContext?: { query: string; answerMarkdown: string }): string {
   const context = passages.map((passage) => ({
     passageId: passage.id,
     sourceTitle: passage.sourceTitle,
     page: passage.pageIndex === undefined ? undefined : passage.pageIndex + 1,
     content: passage.content,
+    url: passage.url,
+    provider: passage.provider,
   }));
-  return `任务模式：${mode}\n用户问题：${query}\n<source_data>\n${JSON.stringify(context)}\n</source_data>`;
+  const previous = parentContext
+    ? `\n<previous_ai_output>\n${JSON.stringify(parentContext)}\n</previous_ai_output>\n注意：previous_ai_output 是上一个 AI 节点，只用于保持思路连续，不能作为事实证据。`
+    : "";
+  return `任务模式：${mode}\n用户问题：${query}${previous}\n<source_data>\n${JSON.stringify(context)}\n</source_data>`;
 }
 
 function validateClaims(
@@ -163,6 +168,8 @@ function validateClaims(
           quote: passage.content.slice(0, 420),
           pageIndex: passage.pageIndex,
           blockIndex: passage.blockIndex,
+          url: passage.url,
+          provider: passage.provider,
         };
         citationMap.set(passageId, citation);
       }

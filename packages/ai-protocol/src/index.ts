@@ -15,6 +15,8 @@ export const passageSchema = z.object({
   pageIndex: z.number().int().nonnegative().optional(),
   blockIndex: z.number().int().nonnegative().optional(),
   heading: z.string().optional(),
+  url: z.string().url().max(2_000).optional(),
+  provider: z.string().max(80).optional(),
 });
 
 export const aiRequestSchema = z.object({
@@ -23,6 +25,10 @@ export const aiRequestSchema = z.object({
   query: z.string().trim().min(1).max(2_000),
   locale: z.string().default("zh-CN"),
   passages: z.array(passageSchema).min(1).max(12),
+  parentContext: z.object({
+    query: z.string().max(2_000),
+    answerMarkdown: z.string().max(8_000),
+  }).optional(),
 });
 
 export type AiRequest = z.infer<typeof aiRequestSchema>;

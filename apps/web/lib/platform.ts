@@ -1,4 +1,4 @@
-import type { AiMode, Citation, Claim, Passage, Usage } from "@reader/domain";
+import type { AiMode, Citation, Claim, Passage, Usage, WebResearchResult } from "@reader/domain";
 import type { ImportedWebArticle } from "@/lib/db";
 
 export interface PlatformAiResult {
@@ -52,9 +52,14 @@ export interface UpdateDownloadProgress {
 }
 
 export async function platformRequestAi(
-  request: { sourceId: string; mode: AiMode; query: string; passages: Passage[]; locale: string },
+  request: { sourceId: string; mode: AiMode; query: string; passages: Passage[]; locale: string; parentContext?: { query: string; answerMarkdown: string } },
 ): Promise<PlatformAiResult | null> {
   void request;
+  return null;
+}
+
+export async function platformResearchWeb(query: string): Promise<WebResearchResult[] | null> {
+  void query;
   return null;
 }
 

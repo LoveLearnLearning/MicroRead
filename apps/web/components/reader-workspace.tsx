@@ -12,6 +12,9 @@ import {
   FileQuestion,
   FileText,
   Focus,
+  GitFork,
+  Globe2,
+  ExternalLink,
   Highlighter,
   Info,
   Library,
@@ -47,6 +50,7 @@ import remarkGfm from "remark-gfm";
 import { FormEvent, MouseEvent, useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import type {
   AiMode,
+  AiBranchType,
   AiResponse,
   Anchor,
   Annotation,
@@ -59,6 +63,7 @@ import type {
   Usage,
   FeatureFlags,
   DocumentTranslation,
+  WebResearchResult,
 } from "@reader/domain";
 import { DEFAULT_WORKSPACE_ID, createId, nowIso } from "@reader/domain";
 import { createAnchor, createPassages, createTranslationChunks, retrievePassages } from "@reader/reader-core";
@@ -67,6 +72,9 @@ import { db, deleteAnnotation, putAnnotation, putCard, updateAnnotation, updateS
 import { requestTranslationBatch } from "@/lib/translation-client";
 import { clampText, formatFileSize, formatRelativeTime } from "@/lib/format";
 import { WebDocument } from "@/components/web-document";
+import { distillAnswerToAnnotation, responseDepth, selectionEvidenceContext } from "@/lib/ai-exploration";
+import { researchWeb } from "@/lib/web-research";
+import { normalizeClientRects } from "@/lib/pdf-annotation-layer";
 
 const PdfDocument = dynamic(
   () => import("@/components/pdf-document").then((module) => module.PdfDocument),
@@ -75,7 +83,9 @@ const PdfDocument = dynamic(
 
 type RightTab = "ai" | "notes" | "info";
 type LeftTab = "structure" | "search";
-type TranslationViewMode = "parallel" | "translation";
+type TranslationViewMode = "inline" | "parallel" | "translation";
+const TRANSLATION_LAYOUT_VERSION = 3;
+const EMPTY_TRANSLATION_CHUNKS: DocumentTranslation["chunks"] = [];
 
 interface ActiveSelection {
   anchor: Anchor;
@@ -88,11 +98,17 @@ interface ActiveSelection {
 interface DraftAnswer {
   id: string;
   query: string;
+  mode: AiMode;
   answerMarkdown: string;
   claims: Claim[];
   citations: Citation[];
   limitations: string[];
   usage: Usage;
+  parentResponseId?: string;
+  branchType?: AiBranchType;
+  anchorId?: string;
+  webSources?: WebResearchResult[];
+  createdAt: string;
 }
 
 export function ReaderWorkspace({ sourceId }: { sourceId: string }) {
@@ -124,6 +140,13 @@ export function ReaderWorkspace({ sourceId }: { sourceId: string }) {
   const [aiError, setAiError] = useState("");
   const [draftAnswer, setDraftAnswer] = useState<DraftAnswer | null>(null);
   const [savedCardId, setSavedCardId] = useState("");
+  const [activeResponseId, setActiveResponseId] = useState("");
+  const [branchParentId, setBranchParentId] = useState<string | null>(null);
+  const [branchType, setBranchType] = useState<AiBranchType>("ROOT");
+  const [webResearchEnabled, setWebResearchEnabled] = useState(false);
+  const [savedAnnotationId, setSavedAnnotationId] = useState("");
+  const [openExplorationAnchorId, setOpenExplorationAnchorId] = useState("");
+  const [selectedExplorationResponseId, setSelectedExplorationResponseId] = useState("");
   const [translationVisible, setTranslationVisible] = useState(false);
   const [translationViewMode, setTranslationViewMode] = useState<TranslationViewMode>("parallel");
   const [translationRunning, setTranslationRunning] = useState(false);
@@ -187,7 +210,7 @@ export function ReaderWorkspace({ sourceId }: { sourceId: string }) {
 
   function handleDocumentMouseUp(event: MouseEvent<HTMLElement>) {
     const target = event.target as HTMLElement;
-    if (target.closest("a, input, textarea, .translation-header, .translation-progress-bar")) return;
+    if (target.closest("a, input, textarea, .translation-header, .translation-progress-bar, .pdf-exploration-layer")) return;
     const nativeSelection = window.getSelection();
     const exact = nativeSelection?.toString().replace(/\s+/g, " ").trim() || "";
     if (!nativeSelection || nativeSelection.rangeCount === 0 || exact.length < 2) {
@@ -214,6 +237,10 @@ export function ReaderWorkspace({ sourceId }: { sourceId: string }) {
     preRange.setEnd(range.startContainer, range.startOffset);
     const startOffset = preRange.toString().replace(/\s+/g, " ").length;
     const bounds = range.getBoundingClientRect();
+    const pageBounds = contextElement.getBoundingClientRect();
+    const pdfRects = currentSource.type === "PDF"
+      ? normalizeClientRects(range.getClientRects(), pageBounds)
+      : undefined;
     const anchor = createAnchor({
       sourceId: currentSource.id,
       exact,
@@ -222,6 +249,7 @@ export function ReaderWorkspace({ sourceId }: { sourceId: string }) {
       blockIndex: numberData(contextElement.dataset.translationBlock ?? contextElement.dataset.blockIndex),
       startOffset,
       endOffset: startOffset + exact.length,
+      pdfRects,
     });
     setSelection({
       anchor,
@@ -334,32 +362,63 @@ export function ReaderWorkspace({ sourceId }: { sourceId: string }) {
       id: `${currentSource.id}:selection:${activeSelection.anchor.id}`,
       sourceId: currentSource.id,
       sourceTitle: currentSource.title,
-      content: activeSelection.aiContext,
+      content: selectionEvidenceContext(activeSelection.anchor.quote.exact, activeSelection.aiContext),
       pageIndex: activeSelection.anchor.pageIndex,
       blockIndex: activeSelection.anchor.blockIndex,
     };
-    await askAi("请结合当前语境解释这段文字，并指出它在上下文中的作用。", "SELECTION_EXPLAIN", [passage], activeSelection.anchor);
+    await askAi("请结合当前语境解释这段文字，并指出它在上下文中的作用。", "SELECTION_EXPLAIN", [passage], activeSelection.anchor, { branchType: "ROOT" });
   }
 
   async function handleQuestionSubmit(event: FormEvent) {
     event.preventDefault();
     const query = aiQuery.trim();
     if (!query) return;
-    const passages = retrievePassages(createPassages(currentSource), query, 8);
-    await askAi(query, "DOCUMENT_QA", passages, null);
+    const passages = retrievePassages(createPassages(currentSource), query, webResearchEnabled ? 6 : 8);
+    const parent = branchParentId ? storedResponses.find((response) => response.id === branchParentId) : undefined;
+    let webSources: WebResearchResult[] = [];
+    if (webResearchEnabled) {
+      try {
+        webSources = await researchWeb(query);
+      } catch (reason) {
+        setAiError(reason instanceof Error ? reason.message : "联网资料检索失败。");
+        return;
+      }
+    }
+    const externalPassages: Passage[] = webSources.slice(0, 6).map((result) => ({
+      id: `web:${result.id}`,
+      sourceId: `web:${result.id}`,
+      sourceTitle: result.title,
+      content: result.snippet,
+      url: result.url,
+      provider: result.provider,
+    }));
+    await askAi(query, "DOCUMENT_QA", [...passages, ...externalPassages], null, {
+      parent,
+      branchType,
+      webSources,
+    });
   }
 
   async function askSuggestion(query: string, mode: AiMode = "DOCUMENT_QA") {
     const passages = retrievePassages(createPassages(currentSource), query, 8);
     setAiQuery(query);
-    await askAi(query, mode, passages, null);
+    await askAi(query, mode, passages, null, { branchType: "ROOT" });
   }
 
-  async function askAi(query: string, mode: AiMode, passages: Passage[], scopedAnchor: Anchor | null) {
-    setRightOpen(true);
+  async function askAi(
+    query: string,
+    mode: AiMode,
+    passages: Passage[],
+    scopedAnchor: Anchor | null,
+    options: { parent?: AiResponse; branchType: AiBranchType; webSources?: WebResearchResult[] },
+  ) {
+    const anchorId = scopedAnchor?.id ?? options.parent?.anchorId;
+    const anchoredToPdf = currentSource.type === "PDF" && Boolean(anchorId);
+    setRightOpen(!anchoredToPdf);
     setRightTab("ai");
     setAiError("");
     setSavedCardId("");
+    setSavedAnnotationId("");
     const featureFlags = (featureSetting?.value as FeatureFlags | undefined) || { aiEnabled: true };
     if (!featureFlags.aiEnabled) {
       setAiError("AI 阅读辅助已在设置中关闭。阅读、搜索和标注仍可使用。 ");
@@ -369,12 +428,30 @@ export function ReaderWorkspace({ sourceId }: { sourceId: string }) {
       setAiError(currentSource.processingState === "EXTRACTING" ? "文本仍在后台提取，完成前可以先选择页面文字进行解释。" : "没有可用于回答的文本证据。扫描件需要 OCR，当前 MVP 尚未启用。 ");
       return;
     }
+    if (scopedAnchor) await db.anchors.put(scopedAnchor);
     setAsking(true);
     const emptyUsage = { inputTokens: 0, outputTokens: 0, estimatedCostUsd: 0, model: "" };
-    setDraftAnswer({ id: "", query, answerMarkdown: "", claims: [], citations: [], limitations: [], usage: emptyUsage });
+    const hierarchy = {
+      parentResponseId: options.parent?.id,
+      branchType: options.branchType,
+      anchorId,
+      webSources: options.webSources,
+    };
+    const requestedAt = nowIso();
+    setDraftAnswer({ id: "", query, mode, answerMarkdown: "", claims: [], citations: [], limitations: [], usage: emptyUsage, createdAt: requestedAt, ...hierarchy });
+    if (anchoredToPdf && anchorId) {
+      setOpenExplorationAnchorId(anchorId);
+      setSelectedExplorationResponseId("");
+    }
     try {
       const result = await requestAiResponse(
-        { sourceId: currentSource.id, mode, query, passages },
+        {
+          sourceId: currentSource.id,
+          mode,
+          query,
+          passages,
+          parentContext: options.parent ? { query: options.parent.query, answerMarkdown: options.parent.answerMarkdown } : undefined,
+        },
         {
           onStarted: (id) => setDraftAnswer((value) => value ? { ...value, id } : value),
           onDelta: (text) => setDraftAnswer((value) => value ? { ...value, answerMarkdown: value.answerMarkdown + text } : value),
@@ -395,6 +472,7 @@ export function ReaderWorkspace({ sourceId }: { sourceId: string }) {
         limitations: result.limitations,
         usage: result.usage,
         createdAt: nowIso(),
+        ...hierarchy,
       };
       await db.transaction("rw", db.aiResponses, db.usageEntries, db.anchors, async () => {
         await db.aiResponses.put(response);
@@ -404,7 +482,14 @@ export function ReaderWorkspace({ sourceId }: { sourceId: string }) {
         ]);
         if (scopedAnchor) await db.anchors.put(scopedAnchor);
       });
-      setDraftAnswer({ ...result, query });
+      setDraftAnswer({ ...result, query, mode, createdAt: response.createdAt, ...hierarchy });
+      setActiveResponseId(result.id);
+      if (anchoredToPdf && anchorId) {
+        setOpenExplorationAnchorId(anchorId);
+        setSelectedExplorationResponseId(result.id);
+      }
+      setBranchParentId(null);
+      setBranchType("ROOT");
       setAiQuery("");
     } catch (reason) {
       setAiError(reason instanceof Error ? reason.message : "AI 请求失败。 ");
@@ -416,18 +501,19 @@ export function ReaderWorkspace({ sourceId }: { sourceId: string }) {
   function openFullTranslation() {
     setTranslationVisible(true);
     setRightOpen(false);
+    setTranslationViewMode(currentSource.type === "PDF" ? "inline" : "parallel");
   }
 
   async function startFullTranslation(restart = false) {
     openFullTranslation();
     const generatedChunks = createTranslationChunks(currentSource);
     if (!generatedChunks.length) return;
-    if (translation?.status === "READY" && translation.sourceContentHash === currentSource.contentHash && !restart) return;
+    if (translation?.status === "READY" && translation.sourceContentHash === currentSource.contentHash && translation.layoutVersion === TRANSLATION_LAYOUT_VERSION && !restart) return;
 
     translationStopRef.current = false;
     setTranslationRunning(true);
     const timestamp = nowIso();
-    const reusable = !restart && translation?.sourceContentHash === currentSource.contentHash
+    const reusable = !restart && translation?.sourceContentHash === currentSource.contentHash && translation.layoutVersion === TRANSLATION_LAYOUT_VERSION
       ? new Map(translation.chunks.map((chunk) => [chunk.id, chunk.translatedText]))
       : new Map<string, string>();
     let working: DocumentTranslation = {
@@ -445,6 +531,7 @@ export function ReaderWorkspace({ sourceId }: { sourceId: string }) {
       model: restart ? "" : translation?.model ?? "",
       createdAt: restart ? timestamp : translation?.createdAt ?? timestamp,
       updatedAt: timestamp,
+      layoutVersion: TRANSLATION_LAYOUT_VERSION,
     };
     working.completedChunks = working.chunks.filter((chunk) => chunk.translatedText).length;
     await db.translations.put(working);
@@ -546,10 +633,10 @@ export function ReaderWorkspace({ sourceId }: { sourceId: string }) {
   }
 
   async function saveAnswerAsCard() {
-    if (!draftAnswer?.answerMarkdown) return;
+    if (!activeResponse?.answerMarkdown) return;
     let sourceAnchor = selection?.anchor || null;
     if (!sourceAnchor) {
-      const firstCitation = draftAnswer.citations[0];
+      const firstCitation = activeResponse.citations[0];
       if (!firstCitation) {
         setAiError("这条回答没有有效引用，不能保存为证据卡片。 ");
         return;
@@ -572,10 +659,10 @@ export function ReaderWorkspace({ sourceId }: { sourceId: string }) {
       sourceId: currentSource.id,
       sourceTitle: currentSource.title,
       sourceAnchorId: sourceAnchor.id,
-      title: clampText(draftAnswer.query, 64),
+      title: clampText(activeResponse.query, 64),
       excerpt: sourceAnchor.quote.exact,
       userNoteMarkdown: "",
-      aiExplanationMarkdown: draftAnswer.answerMarkdown,
+      aiExplanationMarkdown: activeResponse.answerMarkdown,
       tags: [],
       status: "ACTIVE",
       createdAt: timestamp,
@@ -583,6 +670,62 @@ export function ReaderWorkspace({ sourceId }: { sourceId: string }) {
     };
     await putCard(card);
     setSavedCardId(card.id);
+  }
+
+  function beginBranch(type: AiBranchType) {
+    if (!activeResponse?.id) return;
+    setBranchType(type);
+    setBranchParentId(type === "DEEPER" ? activeResponse.id : activeResponse.parentResponseId ?? null);
+    setAiQuery(type === "DEEPER" ? "请沿这个节点继续深入，解释关键机制和推理链。" : type === "DIVERGENT" ? "从另一个角度分析这个问题，并指出与当前节点的差异。" : activeResponse.query);
+  }
+
+  async function distillResponse(response: DraftAnswer | AiResponse) {
+    if (!response.anchorId || !response.answerMarkdown) return;
+    const anchor = anchors.find((item) => item.id === response.anchorId) ?? await db.anchors.get(response.anchorId);
+    if (!anchor) return;
+    const timestamp = nowIso();
+    const annotationId = createId();
+    await putAnnotation(anchor, {
+      id: annotationId,
+      workspaceId: DEFAULT_WORKSPACE_ID,
+      sourceId: currentSource.id,
+      anchorId: anchor.id,
+      type: "NOTE",
+      color: "mint",
+      bodyMarkdown: distillAnswerToAnnotation(response.answerMarkdown, response.webSources),
+      tags: ["AI提炼"],
+      version: 1,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    });
+    setSavedAnnotationId(annotationId);
+  }
+
+  async function askPdfExplorationBranch(parent: AiResponse, type: AiBranchType, query: string, useWebResearch: boolean) {
+    setAiError("");
+    const localPassages = retrievePassages(createPassages(currentSource), query, useWebResearch ? 6 : 8);
+    let webSources: WebResearchResult[] = [];
+    if (useWebResearch) {
+      try {
+        webSources = await researchWeb(query);
+      } catch (reason) {
+        setAiError(reason instanceof Error ? reason.message : "联网资料检索失败。");
+        return;
+      }
+    }
+    const externalPassages: Passage[] = webSources.slice(0, 6).map((result) => ({
+      id: `web:${result.id}`,
+      sourceId: `web:${result.id}`,
+      sourceTitle: result.title,
+      content: result.snippet,
+      url: result.url,
+      provider: result.provider,
+    }));
+    await askAi(query, "DOCUMENT_QA", [...localPassages, ...externalPassages], null, {
+      parent,
+      branchType: type,
+      webSources,
+    });
   }
 
   function navigateToLocation(location: { pageIndex?: number; blockIndex?: number }) {
@@ -596,7 +739,18 @@ export function ReaderWorkspace({ sourceId }: { sourceId: string }) {
 
   const effectiveLeftOpen = leftOpen && !focusMode;
   const effectiveRightOpen = rightOpen && !focusMode;
-  const activeResponse = draftAnswer || (storedResponses[0] ? fromStored(storedResponses[0]) : null);
+  const selectedStoredResponse = storedResponses.find((response) => response.id === activeResponseId) ?? storedResponses[0];
+  const activeResponse = draftAnswer || (selectedStoredResponse ? fromStored(selectedStoredResponse) : null);
+  const inlineDraftResponse: AiResponse | null = draftAnswer?.anchorId ? {
+    ...draftAnswer,
+    id: draftAnswer.id || `draft:${draftAnswer.anchorId}`,
+    sourceId: currentSource.id,
+  } : null;
+  const pdfExplorationResponses = inlineDraftResponse
+    ? [...storedResponses.filter((response) => response.id !== inlineDraftResponse.id), inlineDraftResponse]
+    : storedResponses;
+  const rightPanelResponses = currentSource.type === "PDF" ? storedResponses.filter((response) => !response.anchorId) : storedResponses;
+  const rightPanelAnswer = currentSource.type === "PDF" && activeResponse?.anchorId ? null : activeResponse;
 
   return (
     <div className={`reader-shell ${effectiveLeftOpen ? "left-open" : ""} ${effectiveRightOpen ? "right-open" : ""} ${translationVisible ? "translation-visible" : ""}`}>
@@ -665,12 +819,44 @@ export function ReaderWorkspace({ sourceId }: { sourceId: string }) {
           {source.type === "PDF" ? (
             sourceFile === undefined
               ? <div className="document-loading"><LoaderCircle className="spin" size={22} /><span>正在读取本地原件…</span></div>
-              : <PdfDocument source={source} blob={sourceFile?.blob} zoom={zoom} annotations={annotations} anchors={anchors} />
+              : <PdfDocument
+                  source={source}
+                  blob={sourceFile?.blob}
+                  zoom={zoom}
+                  annotations={annotations}
+                  anchors={anchors}
+                  translationChunks={translationVisible && translationViewMode === "inline" ? translation?.chunks ?? EMPTY_TRANSLATION_CHUNKS : EMPTY_TRANSLATION_CHUNKS}
+                  revealedOriginals={revealedOriginals}
+                  onToggleOriginal={toggleOriginal}
+                  aiResponses={pdfExplorationResponses}
+                  openExplorationAnchorId={openExplorationAnchorId}
+                  selectedExplorationResponseId={selectedExplorationResponseId}
+                  explorationAsking={asking}
+                  explorationError={aiError}
+                  savedExplorationAnnotationId={savedAnnotationId}
+                  onOpenExplorationAnchor={setOpenExplorationAnchorId}
+                  onSelectExplorationResponse={(id) => { setDraftAnswer(null); setActiveResponseId(id); setSelectedExplorationResponseId(id); }}
+                  onAskExplorationBranch={(parent, type, query, useWebResearch) => void askPdfExplorationBranch(parent, type, query, useWebResearch)}
+                  onDistillExploration={(response) => void distillResponse(response)}
+                />
           ) : (
             <div style={{ fontSize: `${zoom}em` }}><WebDocument source={source} annotations={annotations} anchors={anchors} /></div>
           )}
         </main>
-        {translationVisible && (
+        {translationVisible && source.type === "PDF" && translationViewMode === "inline" && (
+          <InlineTranslationControls
+            source={currentSource}
+            translation={translation ?? null}
+            running={translationRunning}
+            revealedCount={revealedOriginals.size}
+            onModeChange={setTranslationViewMode}
+            onStart={(restart) => void startFullTranslation(restart)}
+            onPause={pauseFullTranslation}
+            onRestoreTranslations={() => setRevealedOriginals(new Set())}
+            onClose={() => setTranslationVisible(false)}
+          />
+        )}
+        {translationVisible && translationViewMode !== "inline" && (
           <TranslationPane
             source={currentSource}
             translation={translation ?? null}
@@ -699,7 +885,7 @@ export function ReaderWorkspace({ sourceId }: { sourceId: string }) {
           {rightTab === "ai" && (
             <AiPanel
               source={source}
-              answer={activeResponse}
+              answer={rightPanelAnswer}
               asking={asking}
               error={aiError}
               query={aiQuery}
@@ -709,6 +895,15 @@ export function ReaderWorkspace({ sourceId }: { sourceId: string }) {
               onNavigate={navigateToLocation}
               onSaveCard={() => void saveAnswerAsCard()}
               savedCardId={savedCardId}
+              responses={rightPanelResponses}
+              activeResponseId={rightPanelAnswer?.id || activeResponseId}
+              onSelectResponse={(id) => { setDraftAnswer(null); setActiveResponseId(id); }}
+              onBranch={beginBranch}
+              branchType={branchType}
+              webResearchEnabled={webResearchEnabled}
+              onWebResearchChange={setWebResearchEnabled}
+              onDistill={() => { if (activeResponse) void distillResponse(activeResponse); }}
+              savedAnnotationId={savedAnnotationId}
             />
           )}
           {rightTab === "notes" && (
@@ -774,7 +969,7 @@ function TranslationPane({
 }) {
   const current = translation?.sourceContentHash === source.contentHash ? translation : null;
   const progress = current?.totalChunks ? Math.round(current.completedChunks / current.totalChunks * 100) : 0;
-  const canTranslate = Boolean(source.textContent?.trim());
+  const canTranslate = Boolean(source.textContent?.trim() && (source.type !== "PDF" || source.pdfTextBlocks?.length));
 
   return (
     <section className="translation-pane" aria-label="全文译文" onMouseUp={onSelection}>
@@ -784,6 +979,7 @@ function TranslationPane({
           <small>英文 → 简体中文 · 本地缓存</small>
         </div>
         <div className="translation-view-switch" aria-label="译文显示方式">
+          {source.type === "PDF" && <button onClick={() => onModeChange("inline")} title="把译文放到 PDF 原文位置"><Languages size={14} /> 原位译文</button>}
           <button className={mode === "parallel" ? "active" : ""} onClick={() => onModeChange("parallel")} title="原文和译文同步滚动"><Columns2 size={14} /> 双栏对照</button>
           <button className={mode === "translation" ? "active" : ""} onClick={() => onModeChange("translation")} title="只读译文，点击段落切换原文"><BookOpen size={14} /> 译文阅读</button>
         </div>
@@ -850,6 +1046,37 @@ function TranslationPane({
   );
 }
 
+function InlineTranslationControls({ source, translation, running, revealedCount, onModeChange, onStart, onPause, onRestoreTranslations, onClose }: {
+  source: Source;
+  translation: DocumentTranslation | null;
+  running: boolean;
+  revealedCount: number;
+  onModeChange: (mode: TranslationViewMode) => void;
+  onStart: (restart: boolean) => void;
+  onPause: () => void;
+  onRestoreTranslations: () => void;
+  onClose: () => void;
+}) {
+  const current = translation?.sourceContentHash === source.contentHash && translation.layoutVersion === TRANSLATION_LAYOUT_VERSION ? translation : null;
+  const progress = current?.totalChunks ? Math.round(current.completedChunks / current.totalChunks * 100) : 0;
+  return (
+    <section className="translation-inline-controls" aria-label="PDF 原位翻译控制">
+      <span><Languages size={14} /><strong>原位译文</strong><small>{current ? `${current.completedChunks}/${current.totalChunks} · ${progress}%` : "尚未生成"}</small></span>
+      <div className="translation-view-switch">
+        <button className="active"><Languages size={13} /> 原位</button>
+        <button onClick={() => onModeChange("parallel")}><Columns2 size={13} /> 双栏</button>
+        <button onClick={() => onModeChange("translation")}><BookOpen size={13} /> 译文</button>
+      </div>
+      {!current ? <button className="primary-button compact" disabled={!source.textContent?.trim() || !source.pdfTextBlocks?.length || running} onClick={() => onStart(false)}>开始翻译</button>
+        : running ? <button className="ghost-button" onClick={onPause}><Pause size={13} /> 暂停</button>
+          : current.status !== "READY" ? <button className="primary-button compact" onClick={() => onStart(false)}><RefreshCw size={13} /> 继续</button>
+            : <button className="ghost-button" title="重新翻译" onClick={() => { if (window.confirm("重新翻译会覆盖当前缓存并再次消耗 Token，继续吗？")) onStart(true); }}><RefreshCw size={13} /></button>}
+      {revealedCount > 0 && <button className="ghost-button" onClick={onRestoreTranslations}>恢复译文 ({revealedCount})</button>}
+      <button className="icon-button" aria-label="关闭原位翻译" onClick={onClose}><X size={15} /></button>
+    </section>
+  );
+}
+
 function closestToTop(container: HTMLElement, selector: string): HTMLElement | null {
   const top = container.getBoundingClientRect().top + 72;
   const candidates = Array.from(container.querySelectorAll<HTMLElement>(selector));
@@ -897,6 +1124,15 @@ function AiPanel({
   onNavigate,
   onSaveCard,
   savedCardId,
+  responses,
+  activeResponseId,
+  onSelectResponse,
+  onBranch,
+  branchType,
+  webResearchEnabled,
+  onWebResearchChange,
+  onDistill,
+  savedAnnotationId,
 }: {
   source: Source;
   answer: DraftAnswer | null;
@@ -909,10 +1145,36 @@ function AiPanel({
   onNavigate: (location: { pageIndex?: number; blockIndex?: number }) => void;
   onSaveCard: () => void;
   savedCardId: string;
+  responses: AiResponse[];
+  activeResponseId: string;
+  onSelectResponse: (id: string) => void;
+  onBranch: (type: AiBranchType) => void;
+  branchType: AiBranchType;
+  webResearchEnabled: boolean;
+  onWebResearchChange: (enabled: boolean) => void;
+  onDistill: () => void;
+  savedAnnotationId: string;
 }) {
   return (
     <div className="ai-panel-content">
       <div className="ai-scroll-region">
+        {!!responses.length && (
+          <nav className="ai-branch-map" aria-label="解释分支">
+            <header><GitFork size={13} /><strong>探索树</strong><small>{responses.length} 个节点</small></header>
+            {responses.slice().reverse().map((response) => (
+              <button
+                key={response.id}
+                className={response.id === activeResponseId ? "active" : ""}
+                style={{ paddingLeft: 9 + responseDepth(response, responses) * 13 }}
+                onClick={() => onSelectResponse(response.id)}
+                title={response.query}
+              >
+                <span>{branchLabel(response.branchType)}</span>
+                <strong>{clampText(response.query, 42)}</strong>
+              </button>
+            ))}
+          </nav>
+        )}
         {!answer && !asking ? (
           <div className="ai-welcome">
             <span className="ai-orb"><Sparkles size={22} /></span>
@@ -942,7 +1204,9 @@ function AiPanel({
                       {claim.citationIds.map((citationId) => {
                         const citationIndex = answer.citations.findIndex((citation) => citation.id === citationId);
                         const citation = answer.citations[citationIndex];
-                        return citation ? <button key={citationId} onClick={() => onNavigate(citation)}>[{citationIndex + 1}]</button> : null;
+                        return citation ? (citation.url
+                          ? <a key={citationId} href={citation.url} target="_blank" rel="noreferrer">[{citationIndex + 1}]</a>
+                          : <button key={citationId} onClick={() => onNavigate(citation)}>[{citationIndex + 1}]</button>) : null;
                       })}
                     </div>
                   </div>
@@ -952,33 +1216,47 @@ function AiPanel({
             {!!answer.citations.length && (
               <section className="citation-list">
                 <h3><Quote size={14} /> 原文依据</h3>
-                {answer.citations.map((citation, index) => (
-                  <button key={citation.id} onClick={() => onNavigate(citation)}>
+                {answer.citations.map((citation, index) => {
+                  const content = <>
                     <span className="citation-number">{index + 1}</span>
-                    <span><strong>{citation.pageIndex !== undefined ? `第 ${citation.pageIndex + 1} 页` : source.title}</strong><small>{clampText(citation.quote, 118)}</small></span>
-                    <ChevronRight size={14} />
-                  </button>
-                ))}
+                    <span><strong>{citation.url ? `${citation.provider || "外部资料"} · ${citation.sourceTitle}` : citation.pageIndex !== undefined ? `第 ${citation.pageIndex + 1} 页` : source.title}</strong><small>{clampText(citation.quote, 118)}</small></span>
+                    {citation.url ? <ExternalLink size={14} /> : <ChevronRight size={14} />}
+                  </>;
+                  return citation.url
+                    ? <a key={citation.id} href={citation.url} target="_blank" rel="noreferrer">{content}</a>
+                    : <button key={citation.id} onClick={() => onNavigate(citation)}>{content}</button>;
+                })}
               </section>
             )}
             {!!answer.limitations.length && <div className="answer-limitations"><CircleAlert size={15} /><span>{answer.limitations.join("；")}</span></div>}
             {!asking && answer.answerMarkdown && (
-              <div className="answer-actions">
-                <button className="secondary-button" onClick={onSaveCard} disabled={Boolean(savedCardId)}>{savedCardId ? <Check size={15} /> : <Save size={15} />}{savedCardId ? "已存为卡片" : "存为知识卡"}</button>
-                {answer.usage.model && <span>{answer.usage.model} · {(answer.usage.inputTokens + answer.usage.outputTokens).toLocaleString()} tokens</span>}
-              </div>
+              <>
+                <div className="ai-branch-actions">
+                  <button onClick={() => onBranch("DEEPER")}><GitFork size={13} /> 深入子节点</button>
+                  <button onClick={() => onBranch("DIVERGENT")}><GitFork size={13} /> 同层分叉</button>
+                  <button onClick={() => onBranch("RETRY")}><RefreshCw size={13} /> 从此重答</button>
+                </div>
+                <div className="answer-actions">
+                  <button className="secondary-button" onClick={onSaveCard} disabled={Boolean(savedCardId)}>{savedCardId ? <Check size={15} /> : <Save size={15} />}{savedCardId ? "已存为卡片" : "存为知识卡"}</button>
+                  {answer.anchorId && <button className="secondary-button" onClick={onDistill} disabled={Boolean(savedAnnotationId)}>{savedAnnotationId ? <Check size={15} /> : <StickyNote size={15} />}{savedAnnotationId ? "已提炼为批注" : "提炼为批注"}</button>}
+                  {answer.usage.model && <span>{answer.usage.model} · {(answer.usage.inputTokens + answer.usage.outputTokens).toLocaleString()} tokens</span>}
+                </div>
+              </>
             )}
           </article>
         ) : null}
         {error && <div className="ai-error" role="alert"><CircleAlert size={16} /><span>{error}</span></div>}
       </div>
       <form className="ai-composer" onSubmit={onSubmit}>
-        <div className="ai-scope"><FileText size={12} /><span>当前文档</span></div>
+        <div className="ai-composer-options">
+          <div className="ai-scope"><FileText size={12} /><span>{branchType === "ROOT" ? "当前文档" : `${branchLabel(branchType)}节点`}</span></div>
+          <label className={webResearchEnabled ? "active" : ""}><Globe2 size={12} /><input type="checkbox" checked={webResearchEnabled} onChange={(event) => onWebResearchChange(event.target.checked)} /> 联网查资料</label>
+        </div>
         <div className="ai-input-row">
           <textarea value={query} onChange={(event) => onQueryChange(event.target.value)} placeholder="向这份资料提问…" rows={1} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} />
           <button disabled={asking || !query.trim()} aria-label="发送问题">{asking ? <LoaderCircle className="spin" size={17} /> : <Send size={17} />}</button>
         </div>
-        <small>AI 可能出错，请点击引用核验原文。</small>
+        <small>{webResearchEnabled ? "将检索 Wikipedia 与 Crossref，并在引用中保留外链。" : "AI 可能出错，请点击引用核验原文。"}</small>
       </form>
     </div>
   );
@@ -1160,6 +1438,10 @@ function claimLabel(type: Claim["type"]): string {
     EXTERNAL_KNOWLEDGE: "外部补充",
     UNCERTAIN: "不确定",
   })[type];
+}
+
+function branchLabel(type?: AiBranchType): string {
+  return ({ ROOT: "起点", DEEPER: "深入", DIVERGENT: "分叉", RETRY: "重答" } as const)[type ?? "ROOT"];
 }
 
 function fromStored(response: AiResponse): DraftAnswer {
